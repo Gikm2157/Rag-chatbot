@@ -1,0 +1,23 @@
+poetry.lock
+chroma_db
+models/
+.env
+logs/*.log
+logs/*.log.*
+.pytest_cache/
+.vscode/
+tmp/
+
+# Private local documents must stay in this directory
+samples/private/
+
+# macOS system files
+.DS_Store
+__pycache__
+
+# Python cache folders
+db/__pycache__/
+ingest/__pycache__/
+services/__pycache__/
+controllers/__pycache__/
+schemas/__pycache__/

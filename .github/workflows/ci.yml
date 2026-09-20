@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+
+  # ── Job 1: Unit tests ────────────────────────────────────────────────────────
+  # Fast, free — no services, no API key required.
+  # Runs controller + ingest pipeline tests with fakeredis + FakeEmbeddings.
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Create .env
+        run: |
+          cp .env.example .env
+          sed -i 's/OPENAI_API_KEY=.*/OPENAI_API_KEY=dummy-not-called-in-unit-tests/' .env
+
+      - name: Run unit tests
+        run: pytest tests/controllers/ tests/ingest/ -v --tb=short
+

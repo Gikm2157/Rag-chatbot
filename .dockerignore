@@ -1,0 +1,11 @@
+.env
+.git
+chroma_db
+models
+logs
+tmp
+.vscode
+__pycache__
+*.pyc
+*.pyo
+samples/private

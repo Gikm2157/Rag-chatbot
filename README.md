@@ -260,13 +260,13 @@ python -m http.server 8080
 # 终端 2：导入示例文件
 curl -X POST "http://127.0.0.1:8000/api/v1/ingest" \
   -H "Content-Type: application/json" \
-  -d '{"file_name": "return_refund_policy", "s3_url": "http://localhost:8080/samples/return_refund_policy.pdf"}'
+  -d '{"file_name": "ecommerce_knowledge_base", "s3_url": "http://localhost:8080/samples/ecommerce_knowledge_base.pdf"}'
 ```
 
 > **Docker 用户：**请将 `localhost` 替换为 `host.docker.internal`，使容器能够访问宿主机：
-> `"s3_url": "http://host.docker.internal:8080/samples/return_refund_policy.pdf"`
+> `"s3_url": "http://host.docker.internal:8080/samples/ecommerce_knowledge_base.pdf"`
 
-有关 5 个可直接使用的 PDF，请参见 [`samples/`](samples/)；有关如何准备自己的文档，请参见 [`docs/PDF_INGESTION_GUIDE.md`](docs/PDF_INGESTION_GUIDE.md)。
+可直接使用的中文电商知识库样例请参见 [`samples/`](samples/)；有关如何准备自己的文档，请参见 [`docs/PDF_INGESTION_GUIDE.md`](docs/PDF_INGESTION_GUIDE.md)。
 
 ### 查看导入状态
 

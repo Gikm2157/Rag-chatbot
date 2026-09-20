@@ -129,15 +129,11 @@ for i, chunk in enumerate(chunks[:5]):
 
 ## 示例 PDF
 
-[`samples/`](../samples/) 目录中包含 5 个可直接使用的示例 PDF。它们遵循上述全部指南，无需额外处理即可顺利导入：
+[`samples/`](../samples/) 目录中包含一份可直接使用的中文电商知识库样例。该 PDF 遵循上述全部指南，无需额外处理即可顺利导入：
 
 | 文件 | 内容 |
 |------|------|
-| `return_refund_policy.pdf` | 退货资格、RMA 流程、退款时间和换货政策 |
-| `shipping_policy.pdf` | 国内与国际配送、物流跟踪和包裹丢失处理 |
-| `privacy_policy.pdf` | 数据收集与使用、GDPR 权利和 Cookie |
-| `terms_and_conditions.pdf` | 平台使用、定价、知识产权和责任 |
-| `customer_support_policy.pdf` | 客服渠道、响应时间和升级流程 |
+| `ecommerce_knowledge_base.pdf` | 虚构电商企业的账户、会员、下单、支付、发票、物流、退换货、退款、优惠券、客服及账号安全政策 |
 
 使用这些文件在本地测试导入流水线：
 
@@ -148,10 +144,10 @@ uvicorn main:app --reload
 # 导入示例（请替换为实际托管 URL 或本地文件服务器地址）
 curl -X POST "http://127.0.0.1:8000/api/v1/ingest" \
   -H "Content-Type: application/json" \
-  -d '{"file_name": "return_refund_policy", "s3_url": "https://your-bucket.s3.amazonaws.com/return_refund_policy.pdf"}'
+  -d '{"file_name": "ecommerce_knowledge_base", "s3_url": "https://your-bucket.s3.amazonaws.com/ecommerce_knowledge_base.pdf"}'
 
 # 查看导入状态
-curl http://127.0.0.1:8000/api/v1/ingest/return_refund_policy
+curl http://127.0.0.1:8000/api/v1/ingest/ecommerce_knowledge_base
 ```
 
 ---

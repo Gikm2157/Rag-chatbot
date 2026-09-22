@@ -1,15 +1,13 @@
 """
-End-to-end tests for the ingest management endpoints:
+文档导入管理接口的端到端测试：
   GET  /api/v1/ingest/{doc_id}
   GET  /api/v1/ingest/docs
   DELETE /api/v1/ingest/{doc_id}
 
-These tests cover the controller layer only — they seed Redis/ChromaDB state
-directly and verify HTTP responses and side effects.
-The ingest pipeline itself (download → chunk → embed) is tested separately
-in tests/ingest/policies_test.py.
+这些测试只覆盖控制器层：直接准备 Redis/ChromaDB 状态，然后验证 HTTP 响应和副作用。
+导入流水线本身（下载 → 切分 → 嵌入）由 tests/ingest/policies_test.py 单独测试。
 
-Fixtures: app_client, fake_redis, mock_vs — all from conftest.py.
+app_client、fake_redis、mock_vs 夹具均来自 conftest.py。
 """
 
 
@@ -92,7 +90,7 @@ def test_delete_doc_removes_redis_keys_and_chroma_chunks(app_client, fake_redis,
 
 
 def test_delete_doc_with_no_chroma_chunks_still_succeeds(app_client, fake_redis, mock_vs):
-    """Document with no chunks in ChromaDB (e.g. failed ingest) deletes cleanly."""
+    """ChromaDB 中没有文本块的文档（例如导入失败）也可以正常删除。"""
     fake_redis.hset("ingest_status:empty_doc", mapping={"status": "failed"})
     mock_vs._collection.get.return_value = {"ids": [], "metadatas": []}
 

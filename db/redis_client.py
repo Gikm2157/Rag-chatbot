@@ -17,5 +17,5 @@ def get_redis() -> _redis.Redis:
     )
 
 
-# backward-compatible alias used by graph nodes
+# 为图节点中的旧调用方式保留的兼容别名。
 redis = get_redis()

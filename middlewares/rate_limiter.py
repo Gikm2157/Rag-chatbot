@@ -13,17 +13,16 @@ logger = logging.getLogger(__name__)
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
-    Limits how many requests a single IP can make per minute.
+    限制单个 IP 在一个时间窗口内可以发起的请求数量。
 
-    How it works:
-      - Every request gets a Redis key:  rate_limit:{ip}:{current_minute}
-      - The key is incremented on each request (atomic — no race conditions)
-      - TTL of 61s means Redis cleans it up automatically after the window passes
-      - If the count exceeds max_requests, return 429 Too Many Requests
+    工作方式：
+      - 每个请求对应一个 Redis 键：rate_limit:{ip}:{current_window}
+      - 每次请求都原子递增计数，避免并发竞争
+      - TTL 到期后 Redis 自动清理该窗口的数据
+      - 计数超过 max_requests 时返回 429
 
-    Why per-minute windows?
-      Using the current minute (Unix timestamp // 60) as part of the key means
-      each minute starts a fresh counter with zero cost — no reset logic needed.
+    将当前时间窗口编号作为键的一部分，每个新窗口都会自然使用新的计数器，
+    不需要另外编写重置逻辑。
     """
 
     def __init__(self, app, max_requests: int = 60, window_seconds: int = 60):
@@ -32,12 +31,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.window_seconds = window_seconds
 
     def _increment(self, key: str) -> int:
-        """Blocking Redis calls — run off the event loop via asyncio.to_thread."""
+        """Redis 调用是阻塞操作，通过 asyncio.to_thread 移出事件循环执行。"""
         redis = get_redis()
-        count = redis.incr(key)  # increment and get new value atomically
+        count = redis.incr(key)  # 原子递增并取得新值
 
-        # set TTL only on the first request in this window
-        # (avoids resetting TTL on every request, which would prevent expiry)
+        # 只在当前窗口的第一次请求时设置 TTL，避免每次请求都重置 TTL 导致键无法过期。
         if count == 1:
             redis.expire(key, self.window_seconds + 1)
 
@@ -45,7 +43,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         ip = request.client.host
-        window = int(time.time()) // self.window_seconds  # current time window
+        window = int(time.time()) // self.window_seconds  # 当前时间窗口编号
         key = f"rate_limit:{ip}:{window}"
 
         count = await asyncio.to_thread(self._increment, key)

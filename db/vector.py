@@ -13,13 +13,12 @@ def get_vectorstore() -> Chroma:
         collection_name=setting.chroma_collection,
         persist_directory=setting.chroma_persist_dir,
         embedding_function=get_embeddings(),
-        # cosine distance is the correct metric for text embeddings.
-        # ChromaDB defaults to L2 which produces out-of-range relevance scores
-        # (even negative) when used with LangChain's normalization formula.
+        # 文本嵌入使用余弦距离。ChromaDB 默认的 L2 距离经过 LangChain 归一化后，
+        # 可能产生超出正常范围甚至为负数的相关度分数。
         collection_metadata={"hnsw:space": "cosine"},
     )
 
 
-# backward-compatible alias
+# 为旧调用方式保留的兼容别名。
 def chroma() -> Chroma:
     return get_vectorstore()

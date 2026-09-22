@@ -16,7 +16,7 @@ def _get_chat():
 
 
 def _summary_language(messages: list) -> str:
-    """Match the conversation summary language to the user's language."""
+    """让对话摘要使用与用户相同的语言。"""
     user_text = " ".join(
         m.content for m in messages if isinstance(m, HumanMessage)
     )

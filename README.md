@@ -2,7 +2,7 @@
 
 # 企业知识库智能客服
 
-### 面向中文知识库场景的 RAG 问答后端
+### 面向中小知识库场景的 RAG 问答后端
 
 ![Python](https://img.shields.io/badge/Python-3.10-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
@@ -40,7 +40,7 @@
 
 ## 📌 项目概览
 
-这是一个面向中文企业知识库场景的 **RAG 智能客服后端**，使用以下技术构建：
+这是一个面向中小企业知识库场景的 **RAG 智能客服后端**，使用以下技术构建：
 
 * 🧠 使用 LangGraph 编排对话流程
 * 🔍 使用 ChromaDB 构建 RAG 流水线

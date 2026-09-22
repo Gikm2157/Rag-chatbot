@@ -1,8 +1,7 @@
 """
-conftest.py — shared fixtures for all tests.
+conftest.py：所有测试共用的夹具。
 
-pytest automatically loads this file before running any test.
-Fixtures defined here are available to every test file without importing them.
+pytest 会在运行测试前自动加载此文件；这里定义的夹具无需导入，所有测试文件均可使用。
 """
 
 import pytest
@@ -12,14 +11,10 @@ from unittest.mock import MagicMock, patch
 from langchain_chroma import Chroma
 
 
-# ── Test document content ─────────────────────────────────────────────────────
-# Two versions of the same policy.
-# V2 has two paragraphs changed (30→60 days return window, 5-7→3-5 day refund).
-# The other paragraphs are identical — so the diff should only touch the changed ones.
-
-# Policies are long enough to produce multiple chunks at chunk_size=800.
-# Sections marked CHANGED differ between v1 and v2.
-# Sections marked UNCHANGED are identical — those chunks must be skipped on re-ingest.
+# ── 测试文档内容 ──────────────────────────────────────────────────────────────
+# 同一政策的两个版本。V2 修改了两个段落（退货期 30→60 天，退款时间 5～7→3～5 天），
+# 其他段落完全相同，因此差异更新只能处理发生变化的文本块。
+# 文档长度足以在 chunk_size=800 时产生多个文本块。
 
 POLICY_V1 = """\
 Return Policy
@@ -63,8 +58,8 @@ deletion of their data at any time by contacting privacy@company.com. We comply 
 all applicable data protection regulations including GDPR and local privacy laws.
 """
 
-# CHANGED: return window (30→60 days), refund timeline (5-7→3-5 days)
-# UNCHANGED: exchange policy, shipping policy, privacy policy
+# 已变化：退货期限（30→60 天）、退款时间（5～7→3～5 天）
+# 未变化：换货政策、配送政策、隐私政策
 POLICY_V2 = """\
 Return Policy
 
@@ -109,10 +104,7 @@ all applicable data protection regulations including GDPR and local privacy laws
 
 
 def _make_pdf_bytes(text: str) -> bytes:
-    """
-    Build a real PDF from plain text and return its bytes.
-    fpdf2 is a lightweight library — no external tools needed.
-    """
+    """使用纯文本生成真实 PDF 并返回字节；fpdf2 无需依赖外部工具。"""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", size=11)
@@ -122,49 +114,48 @@ def _make_pdf_bytes(text: str) -> bytes:
     return bytes(pdf.output())
 
 
-# ── PDF fixtures ──────────────────────────────────────────────────────────────
-# scope="session" means the PDF bytes are generated once and reused for all tests.
-# This is safe because these are read-only bytes.
+# ── PDF 夹具 ─────────────────────────────────────────────────────────────────
+# scope="session" 表示 PDF 字节只生成一次并由所有测试复用；只读数据可以安全复用。
 
 @pytest.fixture(scope="session")
 def pdf_v1_bytes():
-    """PDF bytes for the original policy."""
+    """原始政策 PDF 的字节数据。"""
     return _make_pdf_bytes(POLICY_V1)
 
 
 @pytest.fixture(scope="session")
 def pdf_v2_bytes():
-    """PDF bytes for the updated policy (two paragraphs changed)."""
+    """更新后政策 PDF 的字节数据，其中两个段落发生了变化。"""
     return _make_pdf_bytes(POLICY_V2)
 
 
-# ── Fake Redis ────────────────────────────────────────────────────────────────
-# fakeredis behaves exactly like real Redis but lives in memory.
-# No Redis server needed. Each test gets a fresh empty instance.
+# ── 模拟 Redis ────────────────────────────────────────────────────────────────
+# fakeredis 的行为与真实 Redis 相同，但数据只保存在内存中，无需启动 Redis 服务。
+# 每个测试都会获得一个全新的空实例。
 
 @pytest.fixture
 def fake_redis():
     return fakeredis.FakeRedis(decode_responses=True)
 
 
-# ── Fake embeddings ───────────────────────────────────────────────────────────
-# Real embeddings would hit the OpenAI API on every test — slow and costs money.
-# FakeEmbeddings returns small dummy vectors so ChromaDB works without any API call.
+# ── 模拟嵌入模型 ─────────────────────────────────────────────────────────────
+# 真实嵌入模型会让每次测试都调用外部 API，速度慢且产生费用。
+# FakeEmbeddings 返回小型模拟向量，让 ChromaDB 无需 API 即可工作。
 
 class FakeEmbeddings:
-    """Returns 8-dimensional dummy vectors. Fast, free, no API key needed."""
+    """返回 8 维模拟向量，速度快、无费用，也不需要 API Key。"""
 
     def embed_documents(self, texts):
-        # return a slightly different vector per text so ChromaDB doesn't deduplicate
+        # 为每段文本返回略有差异的向量，防止 ChromaDB 将其去重。
         return [[float((i + 1) % 9) / 9] * 8 for i, _ in enumerate(texts)]
 
     def embed_query(self, text):
         return [0.5] * 8
 
 
-# ── Temp ChromaDB ─────────────────────────────────────────────────────────────
-# Each test gets its own empty ChromaDB in a temporary directory.
-# tmp_path is a built-in pytest fixture that creates a unique temp folder per test.
+# ── 临时 ChromaDB ────────────────────────────────────────────────────────────
+# 每个测试都在独立临时目录中使用空 ChromaDB。tmp_path 是 pytest 内置夹具，
+# 会为每个测试创建唯一的临时文件夹。
 
 @pytest.fixture
 def vectorstore(tmp_path):
@@ -175,34 +166,30 @@ def vectorstore(tmp_path):
     )
 
 
-# ── Combined env fixture ──────────────────────────────────────────────────────
-# This patches Redis and ChromaDB in the ingest module.
-# Every test that requests `ingest_env` gets:
-#   - A fresh fake Redis
-#   - A fresh temp ChromaDB
-#   - Both injected into ingest/policies.py so it uses them instead of the real ones
+# ── 组合环境夹具 ──────────────────────────────────────────────────────────────
+# 替换导入模块中的 Redis 和 ChromaDB。每个使用 ingest_env 的测试都会获得：
+#   - 一个全新的模拟 Redis
+#   - 一个全新的临时 ChromaDB
+#   - 注入 ingest/policies.py 的上述实例，用来替代真实外部服务
 
 @pytest.fixture
 def ingest_env(fake_redis, vectorstore):
     """
-    Patch the two external dependencies used by ingest/policies.py.
+    替换 ingest/policies.py 使用的两个外部依赖。
 
-    `patch("ingest.policies.redis", fake_redis)` replaces the `redis` variable
-    inside the policies module with our fake instance for the duration of the test.
-
-    `patch("ingest.policies.get_vectorstore", return_value=vectorstore)` makes
-    every call to get_vectorstore() return our temp ChromaDB instead of the real one.
+    第一个 patch 在测试期间将 policies 模块的 redis 变量替换为模拟实例；
+    第二个 patch 让 get_vectorstore() 始终返回临时 ChromaDB，而不连接真实数据库。
     """
     with patch("ingest.policies.redis", fake_redis), \
          patch("ingest.policies.get_vectorstore", return_value=vectorstore):
         yield fake_redis, vectorstore
 
 
-# ── Chat API fixtures ─────────────────────────────────────────────────────────
+# ── 聊天 API 夹具 ────────────────────────────────────────────────────────────
 
 @pytest.fixture
 def mock_vs():
-    """MagicMock vectorstore with safe empty defaults."""
+    """带有安全空默认值的 MagicMock 向量库。"""
     vs = MagicMock()
     vs.similarity_search_with_relevance_scores.return_value = []
     vs.max_marginal_relevance_search.return_value = []
@@ -212,7 +199,7 @@ def mock_vs():
 
 @pytest.fixture
 def mock_llm():
-    """MagicMock LLM whose invoke() returns a generic answer."""
+    """invoke() 返回通用答案的 MagicMock 大模型。"""
     llm = MagicMock()
     llm.invoke.return_value = MagicMock(content="Test answer.")
     return llm
@@ -221,10 +208,10 @@ def mock_llm():
 @pytest.fixture
 def app_client(fake_redis, mock_vs, mock_llm):
     """
-    TestClient with all external I/O replaced:
-      - Redis (memory nodes + ingest controller + rate limiter + lifespan)
-      - ChromaDB vectorstore (retrieval node + ingest controller + lifespan)
-      - LLM _get_chat() (generate_answer + summarize nodes)
+    替换所有外部 I/O 的 TestClient：
+      - Redis（记忆节点、导入控制器、限流器和生命周期）
+      - ChromaDB（检索节点、导入控制器和生命周期）
+      - 大模型 _get_chat()（回答生成和摘要节点）
     """
     with patch("graph.nodes.load_memory.redis", fake_redis), \
          patch("graph.nodes.store_memory.redis", fake_redis), \

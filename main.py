@@ -18,10 +18,8 @@ settings = get_settings()
 setup_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-# this defines a special function that FastAPI runs around the app lifecycle:
-
-# Code before yield → startup
-# Code after yield → shutdown
+# FastAPI 会在应用生命周期的开始和结束阶段运行这个特殊函数：
+# yield 之前的代码在启动时执行，yield 之后的代码在关闭时执行。
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -35,9 +33,9 @@ async def lifespan(app: FastAPI):
         logger.info("ChromaDB connected")
     except Exception as e:
         logger.error("ChromaDB connection failed: %s", e)
-    # anything want to start before app start here are the above functions that will be called before the app starts, such as database connections and redis.
+    # 需要在服务启动前完成的工作写在 yield 之前，例如检查数据库和 Redis 连接。
     yield
-    # after shutown, you can do some instruction here if needed.
+    # 需要在服务关闭时执行的清理工作可以写在 yield 之后。
     logger.info("Shutting down...")
 
 app = FastAPI(
@@ -59,13 +57,13 @@ app.add_middleware(
 app.include_router(ingest_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
 
-# This is a custom exception handler for validation errors. When a request fails validation, it will return a structured JSON response with details about which fields failed and why.
+# 请求参数校验失败时，返回结构化 JSON，说明出错字段和原因。
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = [{"field": e["loc"][-1], "message": e["msg"]} for e in exc.errors()]
     return JSONResponse(status_code=422, content={"error": "请求参数校验失败", "details": errors})
 
-# This is a generic exception handler that catches any unhandled exceptions in the application. It logs the error and returns a generic 500 Internal Server Error response to the client, without exposing sensitive details about the error. Note:- not validations errors, those are handled by the above handler. This is for any other unhandled exceptions that may occur in the application.
+# 捕获其他未处理异常，记录完整日志，但只向客户端返回通用的 500 错误，避免泄露敏感信息。
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)

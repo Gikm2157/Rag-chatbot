@@ -23,7 +23,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    # Every write to Redis gets saved to a file on disk immediately. If the container restarts, Redis replays that file and recovers all data.
+    # Redis 的每次写入都会立即追加到磁盘文件；容器重启后可重放文件恢复数据。
     command: redis-server --appendonly yes
     ports:
       - "6379:6379"

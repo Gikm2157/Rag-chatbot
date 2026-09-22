@@ -1,10 +1,10 @@
 """
-Tests for the ingest pipeline (ingest/policies.py).
+文档导入流水线（ingest/policies.py）的测试。
 
-Each test covers one specific behaviour of the incremental ingestion flow:
-download → file-level dedup → global dedup → chunk → diff → embed → Redis registry.
+每个测试覆盖增量导入流程的一种具体行为：
+下载 → 文件级去重 → 全局去重 → 文本切分 → 差异比较 → 嵌入 → Redis 登记。
 
-Run with:  pytest -v
+运行命令：pytest -v
 """
 
 import pytest
@@ -17,11 +17,11 @@ URL_V2 = "https://test-bucket.s3.amazonaws.com/return_policy_v2.pdf"
 FILE_NAME = "return_policy"
 
 
-# ── 1. Fresh ingest ───────────────────────────────────────────────────────────
+# ── 1. 首次导入 ──────────────────────────────────────────────────────────────
 
 @resp.activate
 def test_fresh_ingest_adds_all_chunks(pdf_v1_bytes, ingest_env):
-    """First time a document is ingested — every chunk is new."""
+    """首次导入文档时，每个文本块都是新增内容。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
 
     result = process_policy(FILE_NAME, URL_V1)
@@ -32,11 +32,11 @@ def test_fresh_ingest_adds_all_chunks(pdf_v1_bytes, ingest_env):
     assert result["added"] == result["total"]
 
 
-# ── 2. Unchanged file ─────────────────────────────────────────────────────────
+# ── 2. 文件未发生变化 ────────────────────────────────────────────────────────
 
 @resp.activate
 def test_same_file_is_skipped(pdf_v1_bytes, ingest_env):
-    """Upload the exact same file twice — second call should be skipped."""
+    """连续上传完全相同的文件时，第二次调用应该跳过处理。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
 
@@ -47,11 +47,11 @@ def test_same_file_is_skipped(pdf_v1_bytes, ingest_env):
     assert result["reason"] == "file unchanged"
 
 
-# ── 3. Updated file — stale chunks removed ───────────────────────────────────
+# ── 3. 文件已更新：删除失效文本块 ────────────────────────────────────────────
 
 @resp.activate
 def test_update_removes_stale_chunks(pdf_v1_bytes, pdf_v2_bytes, ingest_env):
-    """Upload v1 then v2 — chunks removed from v1 must be deleted from ChromaDB."""
+    """依次上传 v1 和 v2 后，v1 中被移除的文本块必须从 ChromaDB 删除。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     resp.add(resp.GET, URL_V2, body=pdf_v2_bytes, status=200)
 
@@ -62,11 +62,11 @@ def test_update_removes_stale_chunks(pdf_v1_bytes, pdf_v2_bytes, ingest_env):
     assert result_v2["removed"] > 0
 
 
-# ── 4. Updated file — only new chunks added ───────────────────────────────────
+# ── 4. 文件已更新：只添加新文本块 ────────────────────────────────────────────
 
 @resp.activate
 def test_update_adds_only_changed_chunks(pdf_v1_bytes, pdf_v2_bytes, ingest_env):
-    """Unchanged chunks between v1 and v2 must not be re-embedded."""
+    """v1 和 v2 中没有变化的文本块不能重复生成嵌入。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     resp.add(resp.GET, URL_V2, body=pdf_v2_bytes, status=200)
 
@@ -76,11 +76,11 @@ def test_update_adds_only_changed_chunks(pdf_v1_bytes, pdf_v2_bytes, ingest_env)
     assert result_v2["added"] < result_v2["total"]
 
 
-# ── 5. Re-upload v2 after v2 — should skip ───────────────────────────────────
+# ── 5. 再次上传 v2：应该跳过 ─────────────────────────────────────────────────
 
 @resp.activate
 def test_second_update_with_same_file_is_skipped(pdf_v1_bytes, pdf_v2_bytes, ingest_env):
-    """v1 → v2 → v2 again — third call should be skipped."""
+    """按 v1 → v2 → v2 的顺序上传时，第三次调用应该跳过。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     resp.add(resp.GET, URL_V2, body=pdf_v2_bytes, status=200)
     resp.add(resp.GET, URL_V2, body=pdf_v2_bytes, status=200)
@@ -92,11 +92,11 @@ def test_second_update_with_same_file_is_skipped(pdf_v1_bytes, pdf_v2_bytes, ing
     assert result["status"] == "skipped"
 
 
-# ── 6. Redis — status is saved ────────────────────────────────────────────────
+# ── 6. Redis：保存导入状态 ───────────────────────────────────────────────────
 
 @resp.activate
 def test_redis_saves_ingest_status(pdf_v1_bytes, ingest_env):
-    """After ingest, Redis must hold the document's status."""
+    """导入完成后，Redis 必须保存文档状态。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     fake_redis, _ = ingest_env
 
@@ -109,11 +109,11 @@ def test_redis_saves_ingest_status(pdf_v1_bytes, ingest_env):
     assert "total_chunks" in status
 
 
-# ── 7. Redis — doc appears in global list ────────────────────────────────────
+# ── 7. Redis：文档出现在全局列表中 ───────────────────────────────────────────
 
 @resp.activate
 def test_redis_adds_doc_to_global_list(pdf_v1_bytes, ingest_env):
-    """After ingest, the doc_id must appear in the 'ingest:doc_ids' set."""
+    """导入完成后，doc_id 必须出现在 ingest:doc_ids 集合中。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     fake_redis, _ = ingest_env
 
@@ -122,11 +122,11 @@ def test_redis_adds_doc_to_global_list(pdf_v1_bytes, ingest_env):
     assert FILE_NAME in fake_redis.smembers("ingest:doc_ids")
 
 
-# ── 8. Redis — chunk hashes stored ───────────────────────────────────────────
+# ── 8. Redis：保存文本块哈希 ─────────────────────────────────────────────────
 
 @resp.activate
 def test_redis_stores_chunk_hashes(pdf_v1_bytes, ingest_env):
-    """Number of stored hashes must equal total chunks produced."""
+    """保存的哈希数量必须等于生成的文本块总数。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     fake_redis, _ = ingest_env
 
@@ -136,11 +136,11 @@ def test_redis_stores_chunk_hashes(pdf_v1_bytes, ingest_env):
     assert len(stored) == result["total"]
 
 
-# ── 9. ChromaDB — chunk metadata is correct ──────────────────────────────────
+# ── 9. ChromaDB：文本块元数据正确 ────────────────────────────────────────────
 
 @resp.activate
 def test_chunks_have_correct_metadata(pdf_v1_bytes, ingest_env):
-    """Every stored chunk must carry doc_id, chunk_hash, version, page_number."""
+    """每个文本块都必须包含 doc_id、chunk_hash、version 和 page_number。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     _, vectorstore = ingest_env
 
@@ -156,11 +156,11 @@ def test_chunks_have_correct_metadata(pdf_v1_bytes, ingest_env):
         assert "page_number" in meta
 
 
-# ── 10. ChromaDB — stale chunks are gone after update ────────────────────────
+# ── 10. ChromaDB：更新后失效文本块已删除 ─────────────────────────────────────
 
 @resp.activate
 def test_stale_chunks_removed_from_chromadb(pdf_v1_bytes, pdf_v2_bytes, ingest_env):
-    """After v1 → v2, ChromaDB should hold exactly the v2 chunk count."""
+    """从 v1 更新到 v2 后，ChromaDB 中的数量应与 v2 文本块总数完全一致。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     resp.add(resp.GET, URL_V2, body=pdf_v2_bytes, status=200)
     _, vectorstore = ingest_env
@@ -172,22 +172,22 @@ def test_stale_chunks_removed_from_chromadb(pdf_v1_bytes, pdf_v2_bytes, ingest_e
     assert len(in_db["ids"]) == result_v2["total"]
 
 
-# ── 11. Error — download failure ─────────────────────────────────────────────
+# ── 11. 异常：下载失败 ───────────────────────────────────────────────────────
 
 @resp.activate
 def test_download_failure_raises_runtime_error(ingest_env):
-    """Non-200 S3 response must raise RuntimeError."""
+    """S3 返回非 200 状态码时必须抛出 RuntimeError。"""
     resp.add(resp.GET, URL_V1, status=403)
 
     with pytest.raises(RuntimeError, match="Failed to download"):
         process_policy(FILE_NAME, URL_V1)
 
 
-# ── 12. Error — failed status saved to Redis ─────────────────────────────────
+# ── 12. 异常：将失败状态保存到 Redis ─────────────────────────────────────────
 
 @resp.activate
 def test_failed_ingest_status_saved_to_redis(ingest_env):
-    """Even when ingest fails, the failure must be recorded in Redis."""
+    """即使导入失败，也必须在 Redis 中记录失败状态。"""
     resp.add(resp.GET, URL_V1, status=500)
     fake_redis, _ = ingest_env
 
@@ -199,11 +199,11 @@ def test_failed_ingest_status_saved_to_redis(ingest_env):
     assert "error" in status
 
 
-# ── 13. Error — file too large ────────────────────────────────────────────────
+# ── 13. 异常：文件过大 ───────────────────────────────────────────────────────
 
 @resp.activate
 def test_file_too_large_raises_error(pdf_v1_bytes, ingest_env):
-    """File exceeding max_file_size_mb must raise RuntimeError."""
+    """文件超过 max_file_size_mb 限制时必须抛出 RuntimeError。"""
     from unittest.mock import patch, MagicMock
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
 
@@ -216,11 +216,11 @@ def test_file_too_large_raises_error(pdf_v1_bytes, ingest_env):
             process_policy(FILE_NAME, URL_V1)
 
 
-# ── 14. Global duplicate — same content, different file_name ─────────────────
+# ── 14. 全局重复：内容相同但 file_name 不同 ──────────────────────────────────
 
 @resp.activate
 def test_duplicate_content_different_filename_is_skipped(pdf_v1_bytes, ingest_env):
-    """Same PDF under a different file_name must be caught by the global hash registry."""
+    """使用不同 file_name 上传相同 PDF 时，必须被全局哈希登记表识别。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
 
@@ -231,11 +231,11 @@ def test_duplicate_content_different_filename_is_skipped(pdf_v1_bytes, ingest_en
     assert FILE_NAME in result["reason"]
 
 
-# ── 15. Global hash registered after ingest ───────────────────────────────────
+# ── 15. 导入后登记全局哈希 ───────────────────────────────────────────────────
 
 @resp.activate
 def test_global_content_hash_registered(pdf_v1_bytes, ingest_env):
-    """After ingest, the file hash must appear in 'ingest:content_hashes'."""
+    """导入完成后，文件哈希必须出现在 ingest:content_hashes 中。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     fake_redis, _ = ingest_env
 
@@ -245,11 +245,11 @@ def test_global_content_hash_registered(pdf_v1_bytes, ingest_env):
     assert FILE_NAME in registered.values()
 
 
-# ── 16. Old global hash removed when doc content changes ─────────────────────
+# ── 16. 文档变化时删除旧全局哈希 ─────────────────────────────────────────────
 
 @resp.activate
 def test_old_global_hash_removed_on_update(pdf_v1_bytes, pdf_v2_bytes, ingest_env):
-    """When a document is updated, the old file hash must leave the global registry."""
+    """文档更新后，必须从全局登记表删除旧文件哈希。"""
     resp.add(resp.GET, URL_V1, body=pdf_v1_bytes, status=200)
     resp.add(resp.GET, URL_V2, body=pdf_v2_bytes, status=200)
     fake_redis, _ = ingest_env

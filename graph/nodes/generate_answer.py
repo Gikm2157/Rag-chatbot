@@ -2,9 +2,9 @@ import logging
 import re
 from functools import lru_cache
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from prompts.answer import build_answer_prompt
+from prompts.answer import build_system_prompt, build_user_prompt
 from utils.llm_adapter import get_llm
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ def _get_chat():
 
 
 def _response_language(question: str) -> str:
-    """Prefer Chinese for Chinese questions while preserving existing languages."""
+    """中文问题优先使用简体中文回答，同时保留对其他语言的支持。"""
     if re.search(r"[\u4e00-\u9fff]", question):
         return "Simplified Chinese"
     if re.search(r"[\u0600-\u06ff]", question):
@@ -32,20 +32,19 @@ def generate_answer(state):
     lang = _response_language(question)
 
     recent = messages[-6:]
-    history = "\n".join(
-        f"{'User' if isinstance(m, HumanMessage) else 'AI'}: {m.content}"
-        for m in recent
-    )
-
-    prompt = build_answer_prompt(
+    prompt = build_user_prompt(
         summary=summary,
-        history=history,
         docs=docs,
         question=question,
-        lang=lang,
     )
 
-    response = _get_chat().invoke(prompt)
+    model_messages = [
+        SystemMessage(content=build_system_prompt(lang)),
+        *recent,
+        HumanMessage(content=prompt),
+    ]
+
+    response = _get_chat().invoke(model_messages)
     logger.info("Generated answer for user %s (lang=%s)", state.get("user_id"), lang)
 
     return {

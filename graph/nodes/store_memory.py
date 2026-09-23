@@ -9,19 +9,24 @@ from db.redis_client import redis
 logger = logging.getLogger(__name__)
 
 
-def store_memory(state):
-    messages = state.get("messages") or []
+def _serialize_messages(messages):
     serialized = []
-
     for m in messages:
         if isinstance(m, HumanMessage):
             serialized.append({"role": "user", "content": m.content})
         elif isinstance(m, AIMessage):
             serialized.append({"role": "ai", "content": m.content})
+    return serialized
+
+
+def store_memory(state):
+    messages = state.get("messages") or []
+    pending_messages = state.get("pending_messages") or []
 
     data = {
         "summary": state.get("summary", ""),
-        "messages": serialized,
+        "messages": _serialize_messages(messages),
+        "pending_messages": _serialize_messages(pending_messages),
     }
 
     ttl = get_settings().redis_ttl_seconds

@@ -11,6 +11,19 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.documents import Document as LCDoc
 
 
+def _serialized_turns(count: int, prefix: str = "历史") -> list[dict[str, str]]:
+    """生成指定轮数的 Redis 消息，便于测试记忆窗口和摘要边界。"""
+    messages = []
+    for index in range(count):
+        messages.extend(
+            [
+                {"role": "user", "content": f"{prefix}问题{index + 1}"},
+                {"role": "ai", "content": f"{prefix}回答{index + 1}"},
+            ]
+        )
+    return messages
+
+
 # ── 应用健康检查与首页 ───────────────────────────────────────────────────────
 
 def test_health_check(app_client):
@@ -75,7 +88,8 @@ def test_chat_sends_system_message_and_preserves_recent_roles(
     )
 
     assert response.status_code == 200
-    # 第一次调用用于生成回答；达到摘要阈值后，第二次调用才用于生成摘要。
+    # 旧数据没有 pending_messages 时按空列表读取，本轮不会过早触发摘要。
+    assert mock_llm.invoke.call_count == 1
     sent_messages = mock_llm.invoke.call_args_list[0].args[0]
     assert isinstance(sent_messages[0], SystemMessage)
     assert "企业知识库客服助手" in sent_messages[0].content
@@ -85,6 +99,132 @@ def test_chat_sends_system_message_and_preserves_recent_roles(
     assert sent_messages[2].content == "请在订单详情页提交申请。"
     assert isinstance(sent_messages[-1], HumanMessage)
     assert "入口在哪里？" in sent_messages[-1].content
+
+    stored = json.loads(fake_redis.get("system-message-user"))
+    assert len(stored["pending_messages"]) == 2
+
+
+def test_chat_keeps_only_the_latest_five_turns(app_client, fake_redis, mock_llm):
+    """短期记忆只保存最近 10 条消息，但待摘要消息仍独立累计。"""
+    fake_redis.set(
+        "recent-window-user",
+        json.dumps(
+            {
+                "summary": "",
+                "messages": _serialized_turns(5),
+                "pending_messages": [],
+            }
+        ),
+    )
+    mock_llm.invoke.return_value = MagicMock(content="当前回答")
+
+    response = app_client.post(
+        "/api/v1/chat",
+        headers={"x-user-id": "recent-window-user"},
+        json={"q": "当前问题"},
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(fake_redis.get("recent-window-user"))
+    assert len(stored["messages"]) == 10
+    assert stored["messages"][-2:] == [
+        {"role": "user", "content": "当前问题"},
+        {"role": "ai", "content": "当前回答"},
+    ]
+    assert stored["pending_messages"] == stored["messages"][-2:]
+
+
+def test_chat_does_not_summarize_before_twenty_pending_messages(
+    app_client, fake_redis, mock_llm
+):
+    """18 条待摘要消息仍低于 20 条边界，不应额外调用摘要模型。"""
+    fake_redis.set(
+        "below-summary-threshold-user",
+        json.dumps(
+            {
+                "summary": "旧摘要",
+                "messages": _serialized_turns(5),
+                "pending_messages": _serialized_turns(8),
+            }
+        ),
+    )
+    mock_llm.invoke.return_value = MagicMock(content="当前回答")
+
+    response = app_client.post(
+        "/api/v1/chat",
+        headers={"x-user-id": "below-summary-threshold-user"},
+        json={"q": "当前问题"},
+    )
+
+    assert response.status_code == 200
+    assert mock_llm.invoke.call_count == 1
+    stored = json.loads(fake_redis.get("below-summary-threshold-user"))
+    assert stored["summary"] == "旧摘要"
+    assert len(stored["pending_messages"]) == 18
+
+
+def test_chat_updates_rolling_summary_at_twenty_pending_messages(
+    app_client, fake_redis, mock_llm
+):
+    """待摘要消息达到 20 条时，合并旧摘要并在成功后清空待摘要消息。"""
+    fake_redis.set(
+        "rolling-summary-user",
+        json.dumps(
+            {
+                "summary": "用户此前咨询退款条件。",
+                "messages": _serialized_turns(5),
+                "pending_messages": _serialized_turns(9),
+            }
+        ),
+    )
+    mock_llm.invoke.side_effect = [
+        MagicMock(content="当前回答"),
+        MagicMock(content="更新后的长期摘要"),
+    ]
+
+    response = app_client.post(
+        "/api/v1/chat",
+        headers={"x-user-id": "rolling-summary-user"},
+        json={"q": "退款多久能到账？"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == "当前回答"
+    assert mock_llm.invoke.call_count == 2
+    summary_prompt = mock_llm.invoke.call_args_list[1].args[0]
+    assert "用户此前咨询退款条件。" in summary_prompt
+    assert "退款多久能到账？" in summary_prompt
+    assert "当前回答" in summary_prompt
+
+    stored = json.loads(fake_redis.get("rolling-summary-user"))
+    assert stored["summary"] == "更新后的长期摘要"
+    assert stored["pending_messages"] == []
+    assert len(stored["messages"]) == 10
+
+
+def test_summary_failure_keeps_previous_redis_memory(
+    app_client, fake_redis, mock_llm
+):
+    """摘要模型失败时 store_memory 不执行，不能覆盖上一次成功保存的记忆。"""
+    original = {
+        "summary": "原有摘要",
+        "messages": _serialized_turns(5),
+        "pending_messages": _serialized_turns(9),
+    }
+    fake_redis.set("summary-failure-user", json.dumps(original))
+    mock_llm.invoke.side_effect = [
+        MagicMock(content="本轮回答"),
+        RuntimeError("summary unavailable"),
+    ]
+
+    response = app_client.post(
+        "/api/v1/chat",
+        headers={"x-user-id": "summary-failure-user"},
+        json={"q": "本轮问题"},
+    )
+
+    assert response.status_code == 500
+    assert json.loads(fake_redis.get("summary-failure-user")) == original
 
 
 def test_chat_no_docs_still_returns_200(app_client, mock_vs, mock_llm):

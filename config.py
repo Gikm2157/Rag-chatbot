@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     redis_password: str = ""
     redis_ttl_seconds: int = 86400  # 24 小时
 
+    # 对话记忆
+    # 最近消息保留 10 条（5 轮），待摘要消息达到 20 条（10 轮）时更新长期摘要。
+    memory_recent_message_limit: int = 10
+    summary_trigger_message_count: int = 20
+
     # 向量数据库
     chroma_persist_dir: str = "./chroma_db"
     chroma_collection: str = "policies"

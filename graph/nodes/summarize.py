@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from langchain_core.messages import HumanMessage
 
+from config import get_settings
 from prompts.summarize import build_summarize_prompt
 from utils.llm_adapter import get_llm
 
@@ -29,23 +30,34 @@ def _summary_language(messages: list) -> str:
 
 def summarize(state):
     messages = state.get("messages") or []
+    pending_messages = state.get("pending_messages") or []
+    trigger_count = get_settings().summary_trigger_message_count
 
-    if len(messages) < 4:
+    if len(pending_messages) < trigger_count:
         return state
 
-    lang = _summary_language(messages)
+    lang = _summary_language(pending_messages)
     text = "\n".join(
         f"{'User' if isinstance(m, HumanMessage) else 'AI'}: {m.content}"
-        for m in messages
+        for m in pending_messages
     )
 
-    prompt = build_summarize_prompt(text=text, lang=lang)
+    prompt = build_summarize_prompt(
+        previous_summary=state.get("summary", ""),
+        new_messages=text,
+        lang=lang,
+    )
     summary = _get_chat().invoke(prompt)
 
-    logger.info("Summarized conversation (%d messages, lang=%s)", len(messages), lang)
+    logger.info(
+        "Updated conversation summary with %d new messages (lang=%s)",
+        len(pending_messages),
+        lang,
+    )
 
     return {
         **state,
         "summary": summary.content,
-        "messages": messages[-6:],
+        "messages": messages,
+        "pending_messages": [],
     }

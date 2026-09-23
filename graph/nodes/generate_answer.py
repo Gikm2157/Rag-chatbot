@@ -4,6 +4,7 @@ from functools import lru_cache
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from config import get_settings
 from prompts.answer import build_system_prompt, build_user_prompt
 from utils.llm_adapter import get_llm
 
@@ -27,11 +28,13 @@ def _response_language(question: str) -> str:
 def generate_answer(state):
     summary = state.get("summary", "")
     messages = state.get("messages") or []
+    pending_messages = state.get("pending_messages") or []
     docs = state.get("docs", "")
     question = state["question"]
     lang = _response_language(question)
 
-    recent = messages[-6:]
+    recent_limit = get_settings().memory_recent_message_limit
+    recent = messages[-recent_limit:]
     prompt = build_user_prompt(
         summary=summary,
         docs=docs,
@@ -47,9 +50,12 @@ def generate_answer(state):
     response = _get_chat().invoke(model_messages)
     logger.info("Generated answer for user %s (lang=%s)", state.get("user_id"), lang)
 
+    new_messages = [
+        HumanMessage(content=question),
+        AIMessage(content=response.content),
+    ]
+
     return {
-        "messages": messages + [
-            HumanMessage(content=question),
-            AIMessage(content=response.content),
-        ]
+        "messages": (messages + new_messages)[-recent_limit:],
+        "pending_messages": pending_messages + new_messages,
     }

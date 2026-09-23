@@ -68,7 +68,7 @@
 * DeepSeek OpenAI 兼容接口接入
 * `BAAI/bge-small-zh-v1.5` 本地中文嵌入模型部署
 * Docker 国内镜像与 CPU 版 PyTorch 构建适配
-* 中文回答、中文对话摘要、中文 Swagger 和错误提示
+* 中文回答、低频滚动对话摘要、中文 Swagger 和错误提示
 * 中文说明文档、测试与部署验证
 
 原项目版权声明保留在 [LICENSE](LICENSE) 中，后续功能将在此基础上持续开发。
@@ -123,7 +123,7 @@
 4. LangGraph 编排处理流程：
    - 记忆 → 检索 → 推理 → 回答
 5. LLM 生成结合上下文的最终回答
-6. 系统更新对话，并生成摘要供后续使用
+6. 系统保存最近 5 轮原话；每累计 10 轮未摘要消息时更新长期摘要
 
 ## 🗂️ 项目结构
 
@@ -145,7 +145,7 @@ Rag-chatbot/
 ├── tests/
 │   ├── conftest.py                      # 共享夹具（fakeredis、FakeEmbeddings、app_client）
 │   ├── controllers/
-│   │   ├── chat_controller_test.py      # 16 项测试：聊天 API
+│   │   ├── chat_controller_test.py      # 21 项测试：聊天 API 与滚动摘要
 │   │   └── ingest_controller_test.py    # 7 项测试：导入端点
 │   └── ingest/
 │       └── policies_test.py             # 16 项测试：导入流水线逻辑
@@ -209,6 +209,8 @@ EMBEDDING_MODEL=./models/bge-small-zh-v1.5
 
 REDIS_HOST=localhost
 REDIS_PORT=6379
+MEMORY_RECENT_MESSAGE_LIMIT=10
+SUMMARY_TRIGGER_MESSAGE_COUNT=20
 
 RETRIEVAL_SCORE_THRESHOLD=0.3           # 如需更严格地依据知识库回答，可提高到 0.7
 ```
@@ -336,9 +338,14 @@ curl http://127.0.0.1:8000/health
 
 Redis 存储以下内容：
 
-- 完整对话历史
-- 持续更新的对话摘要（用于长期上下文）
+- 最近 10 条原始消息（默认 5 轮），用于保留近期对话的准确表达
+- 尚未进入摘要的消息；默认累计到 20 条（10 轮）时触发摘要
+- 持续更新的长期摘要；更新时只合并旧摘要和本批新增消息，避免重复压缩相同原话
 - 基于 TTL 的过期机制（可通过 `REDIS_TTL_SECONDS` 配置）
+
+消息窗口和摘要阈值可分别通过 `MEMORY_RECENT_MESSAGE_LIMIT` 和
+`SUMMARY_TRIGGER_MESSAGE_COUNT` 配置。旧版 Redis 会话没有待摘要字段时会按空列表读取，
+无需手动清空已有会话数据。
 
 ### 🔹 RAG 系统：增量导入 + MMR 检索
 
@@ -495,17 +502,18 @@ max_marginal_relevance_search k=3, fetch_k=10
 
 ## 🧪 测试
 
-单元测试分布在三个文件中，无需服务器、API 密钥或外部服务：
+单元测试无需服务器、API 密钥或外部服务：
 
 ```bash
-pytest tests/controllers/ tests/ingest/ -v
+pytest -q
 ```
 
 | 文件 | 覆盖内容 |
 |------|----------|
-| `tests/controllers/chat_controller_test.py` | 聊天 API、记忆隔离、速率限制、参数验证 |
+| `tests/controllers/chat_controller_test.py` | 聊天 API、滚动摘要、记忆隔离、速率限制、参数验证 |
 | `tests/controllers/ingest_controller_test.py` | 状态查询、文档列表和删除端点 |
 | `tests/ingest/policies_test.py` | 导入流水线：文本切分、去重、差异比较和错误处理 |
+| `tests/utils/llm_adapter_test.py` | 多模型初始化和不支持厂商校验 |
 
 测试使用 `fakeredis`（内存 Redis）、`FakeEmbeddings`（不调用 OpenAI）和临时 ChromaDB，环境完全隔离且运行快速（约 1 秒）。
 

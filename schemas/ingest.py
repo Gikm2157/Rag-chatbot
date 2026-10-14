@@ -3,6 +3,18 @@ import re
 from pydantic import BaseModel, HttpUrl, field_validator
 
 
+def validate_file_name(value: str) -> str:
+    """校验文档 ID，避免路径字符和点号进入 Redis/Chroma 键名。"""
+    value = value.strip()
+    if not value:
+        raise ValueError("file_name 不能为空")
+    if re.search(r"[/\\.]", value):
+        raise ValueError("file_name 不能包含路径分隔符或点号")
+    if len(value) > 128:
+        raise ValueError("file_name 过长，最多允许 128 个字符")
+    return value
+
+
 class IngestRequest(BaseModel):
     file_name: str
     s3_url: HttpUrl
@@ -20,14 +32,7 @@ class IngestRequest(BaseModel):
     @field_validator("file_name")
     @classmethod
     def safe_file_name(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("file_name 不能为空")
-        if re.search(r"[/\\.]", v):
-            raise ValueError("file_name 不能包含路径分隔符或点号")
-        if len(v) > 128:
-            raise ValueError("file_name 过长，最多允许 128 个字符")
-        return v
+        return validate_file_name(v)
 
 
 class IngestResult(BaseModel):

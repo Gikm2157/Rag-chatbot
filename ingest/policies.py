@@ -75,6 +75,33 @@ def _download_file(s3_url: str, file_name: str) -> str:
     return tmp.name
 
 
+def _save_uploaded_file(uploaded_file) -> str:
+    """将上传的二进制文件保存到临时 PDF，并执行大小限制。"""
+    setting = get_settings()
+    max_bytes = setting.max_file_size_mb * 1024 * 1024
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    size = 0
+
+    try:
+        with tmp:
+            while True:
+                chunk = uploaded_file.read(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    raise RuntimeError(
+                        f"File exceeds {setting.max_file_size_mb}MB limit"
+                    )
+                tmp.write(chunk)
+    except Exception:
+        if os.path.exists(tmp.name):
+            os.remove(tmp.name)
+        raise
+
+    return tmp.name
+
+
 def _get_stored_chunk_hashes(doc_id: str) -> set:
     """读取该文档上次导入时保存的文本块哈希集合。"""
     return redis.smembers(f"doc_chunks:{doc_id}")  # 键不存在时返回空集合
@@ -87,7 +114,11 @@ def _save_status(doc_id: str, **fields):
     })
 
 
-def process_policy(file_name: str, s3_url: str) -> dict:
+def process_policy(
+    file_name: str,
+    s3_url: str | None = None,
+    uploaded_file=None,
+) -> dict:
     # doc_id 是不带 .pdf 扩展名的文档标识。例如 Company_Policy_v2.pdf 对应
     # Company_Policy_v2，同一文档的不同版本可以共用一个 ID，便于追踪内容变化。
     doc_id = file_name.rstrip(".pdf") if file_name.endswith(".pdf") else file_name
@@ -95,9 +126,15 @@ def process_policy(file_name: str, s3_url: str) -> dict:
     file_path = None
 
     try:
-        # ── 第 1 步：下载文件 ────────────────────────────────────────────────
-        logger.info("Downloading %s", file_name)
-        file_path = _download_file(s3_url, file_name)
+        # ── 第 1 步：准备本地临时文件 ────────────────────────────────────────
+        if uploaded_file is not None:
+            logger.info("Saving uploaded file %s", file_name)
+            file_path = _save_uploaded_file(uploaded_file)
+        elif s3_url:
+            logger.info("Downloading %s", file_name)
+            file_path = _download_file(s3_url, file_name)
+        else:
+            raise ValueError("Either s3_url or uploaded_file must be provided")
 
         # ── 第 2 步：检查文件内容是否发生变化 ────────────────────────────────
         new_file_hash = _file_hash(file_path)
@@ -122,11 +159,11 @@ def process_policy(file_name: str, s3_url: str) -> dict:
         pages = PyPDFLoader(file_path).load()
 
         # RecursiveCharacterTextSplitter 按以下优先级尝试切分：
-        # 段落（\n\n）→ 行（\n）→ 句号（.）→ 空格 → 单个字符，尽量保留完整语义。
+        # 切分优先级 段落 → 换行 → 中文句子 → 英文句子 → 空格 → 单个字符，尽量保留完整语义。
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=800,
             chunk_overlap=100,
-            separators=["\n\n", "\n", ".", " ", ""]
+            separators=["\n\n","\n","。","！", "？","；",".","!","?",";"," ",""]
         )
         raw_chunks = splitter.split_documents(pages)
 
@@ -226,7 +263,7 @@ def process_policy(file_name: str, s3_url: str) -> dict:
 
     except Exception as e:
         _save_status(doc_id, status="failed", error=str(e),
-                     updated_at=datetime.now(timezone.utc).isoformat())
+                    updated_at=datetime.now(timezone.utc).isoformat())
         logger.exception("Ingest failed for %s", doc_id)
         raise
 

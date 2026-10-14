@@ -150,6 +150,16 @@ curl -X POST "http://127.0.0.1:8000/api/v1/ingest" \
 curl http://127.0.0.1:8000/api/v1/ingest/ecommerce_knowledge_base
 ```
 
+也可以直接通过上传接口导入本地 PDF。前端使用 `multipart/form-data` 发送 `file_name` 和 `file` 两个字段；Docker 部署时不需要把 Windows 本地路径映射进容器：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/ingest/upload" \
+  -F "file_name=ecommerce_knowledge_base" \
+  -F "file=@samples/ecommerce_knowledge_base.pdf"
+```
+
+上传接口和 URL 接口共用同一套导入流水线，仍会执行文件大小限制、重复检测、文本切分、增量更新和失败状态记录。
+
 ---
 
 ## PDF 上传前检查清单

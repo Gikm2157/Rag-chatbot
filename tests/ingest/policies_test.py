@@ -7,6 +7,8 @@
 运行命令：pytest -v
 """
 
+from io import BytesIO
+
 import pytest
 import responses as resp
 
@@ -30,6 +32,15 @@ def test_fresh_ingest_adds_all_chunks(pdf_v1_bytes, ingest_env):
     assert result["added"] > 0
     assert result["removed"] == 0
     assert result["added"] == result["total"]
+
+
+def test_uploaded_pdf_adds_all_chunks(pdf_v1_bytes, ingest_env):
+    """本地上传文件应复用 URL 导入的完整处理流水线。"""
+    result = process_policy(FILE_NAME, uploaded_file=BytesIO(pdf_v1_bytes))
+
+    assert result["status"] == "done"
+    assert result["added"] == result["total"]
+    assert result["total"] > 0
 
 
 # ── 2. 文件未发生变化 ────────────────────────────────────────────────────────
@@ -214,6 +225,18 @@ def test_file_too_large_raises_error(pdf_v1_bytes, ingest_env):
     with patch("ingest.policies.get_settings", return_value=fake_settings):
         with pytest.raises(RuntimeError, match="exceeds"):
             process_policy(FILE_NAME, URL_V1)
+
+
+def test_uploaded_file_too_large_raises_error(pdf_v1_bytes, ingest_env):
+    """本地上传同样必须执行文件大小限制。"""
+    from unittest.mock import MagicMock, patch
+
+    fake_settings = MagicMock()
+    fake_settings.max_file_size_mb = 0
+
+    with patch("ingest.policies.get_settings", return_value=fake_settings):
+        with pytest.raises(RuntimeError, match="exceeds"):
+            process_policy(FILE_NAME, uploaded_file=BytesIO(pdf_v1_bytes))
 
 
 # ── 14. 全局重复：内容相同但 file_name 不同 ──────────────────────────────────

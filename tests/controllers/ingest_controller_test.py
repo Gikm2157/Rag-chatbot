@@ -10,6 +10,8 @@
 app_client、fake_redis、mock_vs 夹具均来自 conftest.py。
 """
 
+from unittest.mock import patch
+
 
 # ── GET /api/v1/ingest/{doc_id} ──────────────────────────────────────────────
 
@@ -29,6 +31,51 @@ def test_ingest_status_returns_doc_data(app_client, fake_redis):
     assert body["status"] == "done"
     assert body["file_hash"] == "abc123"
     assert body["total_chunks"] == "5"
+
+
+def test_upload_endpoint_accepts_pdf(app_client):
+    """上传端点应接收 multipart PDF，并把文件交给导入服务。"""
+    result = {
+        "doc_id": "uploaded_doc",
+        "status": "done",
+        "added": 1,
+        "removed": 0,
+        "total": 1,
+    }
+
+    with patch(
+        "controllers.ingest_controller.ingest_uploaded_file",
+        return_value=result,
+    ) as ingest:
+        resp = app_client.post(
+            "/api/v1/ingest/upload",
+            data={"file_name": "uploaded_doc"},
+            files={"file": ("document.pdf", b"%PDF-test", "application/pdf")},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["doc_id"] == "uploaded_doc"
+    ingest.assert_called_once()
+
+
+def test_upload_endpoint_rejects_non_pdf(app_client):
+    resp = app_client.post(
+        "/api/v1/ingest/upload",
+        data={"file_name": "invalid_doc"},
+        files={"file": ("document.txt", b"plain text", "text/plain")},
+    )
+
+    assert resp.status_code == 422
+
+
+def test_upload_endpoint_rejects_unsafe_file_name(app_client):
+    resp = app_client.post(
+        "/api/v1/ingest/upload",
+        data={"file_name": "../secret"},
+        files={"file": ("document.pdf", b"%PDF-test", "application/pdf")},
+    )
+
+    assert resp.status_code == 422
 
 
 def test_ingest_status_not_found_returns_404(app_client):

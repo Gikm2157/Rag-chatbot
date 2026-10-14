@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from db.redis_client import redis
 from db.vector import get_vectorstore
@@ -11,7 +11,8 @@ from schemas.ingest import (
     IngestRequest,
     IngestResponse,
 )
-from services.ingest_service import ingest_file
+from schemas.ingest import validate_file_name
+from services.ingest_service import ingest_file, ingest_uploaded_file
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,6 +25,28 @@ def ingest(request: IngestRequest):
         return {"status": "success", "data": result}
     except Exception:
         logger.exception("Ingest failed for %s", request.file_name)
+        raise HTTPException(status_code=500, detail="文档导入失败")
+
+
+@router.post("/ingest/upload", response_model=IngestResponse, summary="上传并导入本地 PDF")
+def ingest_upload(
+    file_name: str = Form(..., description="文档 ID，不含扩展名"),
+    file: UploadFile = File(..., description="要导入的 PDF 文件"),
+):
+    """接收前端上传的 PDF，并复用现有增量导入流程。"""
+    try:
+        file_name = validate_file_name(file_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=422, detail="上传文件必须是 PDF")
+
+    try:
+        result = ingest_uploaded_file(file_name, file.file)
+        return {"status": "success", "data": result}
+    except Exception:
+        logger.exception("Uploaded ingest failed for %s", file_name)
         raise HTTPException(status_code=500, detail="文档导入失败")
 
 

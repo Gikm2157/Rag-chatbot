@@ -129,36 +129,60 @@
 
 ```
 Rag-chatbot/
-├── controllers/          # 路由处理逻辑（聊天、导入端点）
-├── middlewares/          # 速率限制中间件
-├── db/                   # Redis 和 ChromaDB 客户端
-├── graph/
-│   ├── builder.py        # LangGraph 流水线定义
-│   └── nodes/            # 各个图节点（加载记忆、检索上下文、生成回答、摘要、存储记忆）
-├── ingest/               # 增量文档导入流水线
-├── prompts/
-│   ├── answer.py         # 回答生成提示词
-│   └── summarize.py      # 对话摘要提示词
-├── schemas/
-│   ├── chat.py           # ChatRequest 数据结构
-│   └── ingest.py         # IngestRequest 数据结构
-├── tests/
-│   ├── conftest.py                      # 共享夹具（fakeredis、FakeEmbeddings、app_client）
-│   ├── controllers/
-│   │   ├── chat_controller_test.py      # 21 项测试：聊天 API 与滚动摘要
-│   │   └── ingest_controller_test.py    # 7 项测试：导入端点
-│   └── ingest/
-│       └── policies_test.py             # 16 项测试：导入流水线逻辑
-├── .github/
-│   └── workflows/
-│       └── ci.yml                       # CI 流水线（每次 PR/推送时运行单元测试）
-├── main.py               # 应用入口
-├── config.py             # 配置（pydantic-settings）
-├── pytest.ini            # 测试配置
-├── requirements.txt
-├── requirements-dev.txt  # 测试依赖（pytest、fakeredis、responses、fpdf2）
-└── docker-compose.yml
+├── controllers/                    # HTTP API 路由：聊天、URL 导入、本地 PDF 上传、状态查询和删除
+│   ├── chat_controller.py
+│   └── ingest_controller.py
+├── schemas/                        # 请求/响应数据结构及输入校验
+│   ├── chat.py
+│   └── ingest.py
+├── services/                       # API 与业务流程之间的服务层
+│   ├── chat_service.py             # 调用 LangGraph 并返回聊天结果
+│   └── ingest_service.py           # 编排文档导入、状态和清理操作
+├── graph/                          # LangGraph 对话工作流
+│   ├── builder.py                  # 定义节点、执行顺序和条件边
+│   ├── state.py                    # 节点间共享的状态结构
+│   └── nodes/                      # 记忆读取、知识检索、回答生成、摘要和记忆保存
+├── ingest/
+│   └── policies.py                 # PDF 获取/解析、切分、去重、增量更新和向量写入
+├── db/                             # Redis 记忆与 ChromaDB 向量库访问
+│   ├── redis_client.py
+│   └── vector.py
+├── utils/                          # LLM 与 Embedding 模型适配器
+│   ├── llm_adapter.py
+│   └── embedding_adapter.py
+├── prompts/                        # 回答生成和对话摘要提示词
+├── middlewares/                    # 请求限流、日志配置等中间件
+├── docs/                           # 使用和开发说明文档
+│   └── PDF_INGESTION_GUIDE.md      # PDF 准备、导入和常见问题
+├── tests/                          # 自动化测试，与源码模块对应
+│   ├── conftest.py                 # 测试夹具
+│   ├── controllers/                # API 路由测试
+│   ├── ingest/                     # 文档导入逻辑测试
+│   └── utils/                      # 模型适配器测试
+├── samples/                        # 可公开使用的 PDF 示例
+├── models/                         # 本地嵌入模型文件（需单独下载）
+├── chroma_db/                      # 本地 ChromaDB 持久化数据
+├── tmp/                            # 文档处理时使用的临时文件
+├── logs/                           # 应用运行日志
+├── .github/workflows/ci.yml        # GitHub Actions 自动测试流程
+├── main.py                         # FastAPI 应用入口
+├── config.py                       # 环境变量和应用配置
+├── .env.example                    # 环境变量模板；复制为 .env 后填写
+├── requirements.txt                # 运行依赖
+├── requirements-dev.txt            # 测试与开发依赖
+├── Dockerfile                      # API 镜像构建配置
+└── docker-compose.yml              # API、Redis 等容器服务配置
 ```
+
+### 主要调用链
+
+- **聊天问答：**`chat_controller.py` → `chat_service.py` → `graph/builder.py` → `graph/nodes/` → Redis/ChromaDB/大模型 → 返回回答。
+- **URL 导入：**`ingest_controller.py` → `ingest_service.py` → `ingest/policies.py` 下载并处理 PDF。
+- **本地 PDF 上传：**`ingest_controller.py` 接收文件并暂存 → `ingest_service.py` → `ingest/policies.py`；后续切分、Embedding、向量存储和状态登记复用 URL 导入流程。
+
+### 本地运行数据
+
+`.env`、`models/`、`chroma_db/`、`tmp/` 和 `logs/` 属于本机配置、模型、知识库数据、临时文件或运行日志。提交代码前应确认 `.gitignore` 已排除个人配置和不应公开的数据；不要把含个人信息的 PDF 放入公开提交。
 
 ## ⚙️ 安装与配置
 
@@ -238,20 +262,10 @@ uvicorn main:app --reload
 docker compose up -d --build
 ```
 
-## 📥 6. 文档导入（S3 → ChromaDB）
+## 📥 6. 文档导入（URL/本地上传 → ChromaDB）
 
 ### 导入文档
 
-```bash
-curl -X POST "http://127.0.0.1:8000/api/v1/ingest" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "file_name": "terms_conditions",
-    "s3_url": "https://your-s3-url.pdf"
-  }'
-```
-
-### 本地开发（无需 S3）
 
 使用 Python 内置 HTTP 服务器提供 `samples/` 目录中的文件，导入流水线会像访问普通 URL 一样获取这些文件：
 
@@ -267,6 +281,16 @@ curl -X POST "http://127.0.0.1:8000/api/v1/ingest" \
 
 > **Docker 用户：**请将 `localhost` 替换为 `host.docker.internal`，使容器能够访问宿主机：
 > `"s3_url": "http://host.docker.internal:8080/samples/ecommerce_knowledge_base.pdf"`
+
+前端或 Swagger 也可以直接上传本地 PDF，无需启动本地 HTTP 文件服务器：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/ingest/upload" \
+  -F "file_name=ecommerce_knowledge_base" \
+  -F "file=@samples/ecommerce_knowledge_base.pdf"
+```
+
+浏览器前端使用 `FormData` 发送同样的两个字段：`file_name`（不含扩展名）和 `file`。上传接口会在服务端写入临时文件，并复用相同的文本切分、增量更新、Embedding 和 ChromaDB 流程；Docker 部署也不需要让容器访问宿主机路径。
 
 可直接使用的中文电商知识库样例请参见 [`samples/`](samples/)；有关如何准备自己的文档，请参见 [`docs/PDF_INGESTION_GUIDE.md`](docs/PDF_INGESTION_GUIDE.md)。
 
@@ -511,8 +535,8 @@ pytest -q
 | 文件 | 覆盖内容 |
 |------|----------|
 | `tests/controllers/chat_controller_test.py` | 聊天 API、滚动摘要、记忆隔离、速率限制、参数验证 |
-| `tests/controllers/ingest_controller_test.py` | 状态查询、文档列表和删除端点 |
-| `tests/ingest/policies_test.py` | 导入流水线：文本切分、去重、差异比较和错误处理 |
+| `tests/controllers/ingest_controller_test.py` | URL/本地 PDF 导入、状态查询、文档列表和删除端点 |
+| `tests/ingest/policies_test.py` | 导入流水线：PDF 处理、文本切分、去重、差异比较和错误处理 |
 | `tests/utils/llm_adapter_test.py` | 多模型初始化和不支持厂商校验 |
 
 测试使用 `fakeredis`（内存 Redis）、`FakeEmbeddings`（不调用 OpenAI）和临时 ChromaDB，环境完全隔离且运行快速（约 1 秒）。

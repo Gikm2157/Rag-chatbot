@@ -48,11 +48,14 @@ def generate_answer(state):
     ]
 
     response = _get_chat().invoke(model_messages)
+    # 模型有时会在回答开头或结尾带换行。这里统一清理，避免前端保留大段空白，
+    # 同时确保写入 Redis 的对话记忆也是干净的文本。
+    answer = response.content.strip()
     logger.info("Generated answer for user %s (lang=%s)", state.get("user_id"), lang)
 
     new_messages = [
         HumanMessage(content=question),
-        AIMessage(content=response.content),
+        AIMessage(content=answer),
     ]
 
     return {

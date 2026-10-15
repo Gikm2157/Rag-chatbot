@@ -44,7 +44,7 @@ def test_chat_returns_answer_and_sources(app_client, mock_vs, mock_llm):
     """完整 RAG 流程：分数超过阈值 → 检索文档 → 大模型回答。"""
     doc = LCDoc(
         page_content="Return policy text.",
-        metadata={"source_file": "policy.pdf"},
+        metadata={"source_file": "policy.pdf", "doc_id": "policy"},
     )
     mock_vs.similarity_search_with_relevance_scores.return_value = [(doc, 0.85)]
     mock_vs.max_marginal_relevance_search.return_value = [doc]
@@ -61,6 +61,28 @@ def test_chat_returns_answer_and_sources(app_client, mock_vs, mock_llm):
     assert body["status"] == "success"
     assert body["data"] == "You can return within 30 days."
     assert "policy.pdf" in body["sources"]
+    mock_vs.max_marginal_relevance_search.assert_called_once_with(
+        "what is the return policy?",
+        k=3,
+        fetch_k=10,
+        filter={"doc_id": "policy"},
+    )
+
+
+def test_chat_strips_model_answer_whitespace(app_client, fake_redis, mock_llm):
+    """模型回答两端的换行应被清理，避免界面出现大段空白。"""
+    mock_llm.invoke.return_value = MagicMock(content="\n\n答案内容\n")
+
+    response = app_client.post(
+        "/api/v1/chat",
+        headers={"x-user-id": "trim-answer-user"},
+        json={"q": "问题"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == "答案内容"
+    stored = json.loads(fake_redis.get("trim-answer-user"))
+    assert stored["messages"][-1] == {"role": "ai", "content": "答案内容"}
 
 
 def test_chat_sends_system_message_and_preserves_recent_roles(

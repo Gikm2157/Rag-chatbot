@@ -119,9 +119,10 @@ def process_policy(
     s3_url: str | None = None,
     uploaded_file=None,
 ) -> dict:
-    # doc_id 是不带 .pdf 扩展名的文档标识。例如 Company_Policy_v2.pdf 对应
-    # Company_Policy_v2，同一文档的不同版本可以共用一个 ID，便于追踪内容变化。
-    doc_id = file_name.rstrip(".pdf") if file_name.endswith(".pdf") else file_name
+    # file_name 按接口约定是不带 .pdf 的文档 ID，例如文件 Company_Policy_v2.pdf
+    # 对应 ID Company_Policy_v2；同一文档的不同版本可以共用一个 ID，便于追踪内容变化。
+    # file_name 已在 API 层校验为不带扩展名的稳定文档 ID，直接保留原值。
+    doc_id = file_name
     setting = get_settings()
     file_path = None
 

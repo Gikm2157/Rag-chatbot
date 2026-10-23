@@ -10,10 +10,21 @@ def retrieve_context(state):
     question = state["question"]
     threshold = get_settings().retrieval_score_threshold
     vs = get_vectorstore()
+    department_id = state.get("department_id")
+    search_filter = {"department_id": department_id} if department_id else None
 
     # 第 1 步：先取多个带分数的候选文本块。这样既能完成相关性门控，
     # 也能根据最高分文本块确定本次问题最匹配的文档。
-    candidates = vs.similarity_search_with_relevance_scores(question, k=10)
+    search_kwargs = {"k": 10}
+    if search_filter:
+        search_kwargs["filter"] = search_filter
+    candidates = vs.similarity_search_with_relevance_scores(question, **search_kwargs)
+    if department_id:
+        candidates = [
+            (doc, score)
+            for doc, score in candidates
+            if doc.metadata.get("department_id") == department_id
+        ]
     qualified = [(doc, score) for doc, score in candidates if score >= threshold]
     if not qualified:
         logger.info(
@@ -38,8 +49,19 @@ def retrieve_context(state):
     }
     # 旧数据或测试替身可能没有 doc_id；这种情况下保留兼容的无过滤检索。
     if best_doc_id:
-        mmr_kwargs["filter"] = {"doc_id": best_doc_id}
+        mmr_filter = {"doc_id": best_doc_id}
+        if department_id:
+            # Chroma 的复合元数据条件必须使用 $and，不能直接并列两个字段。
+            mmr_filter = {
+                "$and": [
+                    {"doc_id": best_doc_id},
+                    {"department_id": department_id},
+                ]
+            }
+        mmr_kwargs["filter"] = mmr_filter
     docs = vs.max_marginal_relevance_search(question, **mmr_kwargs)
+    if department_id:
+        docs = [doc for doc in docs if doc.metadata.get("department_id") == department_id]
 
     context = "\n\n".join(d.page_content for d in docs)
     # 收集去重后的源文件名，用于说明回答引用了哪些文档。

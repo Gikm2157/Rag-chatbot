@@ -16,6 +16,7 @@ from middlewares.trusted_origin import TrustedOriginMiddleware
 from db.redis_client import get_redis
 from db.vector import get_vectorstore
 from services.auth_service import initialize_auth
+from ingest.policies import migrate_legacy_department_metadata
 
 settings = get_settings()
 setup_logging(settings.log_level)
@@ -34,6 +35,7 @@ async def lifespan(app: FastAPI):
 
     try:
         get_vectorstore().similarity_search("health", k=1)
+        migrate_legacy_department_metadata()
         logger.info("ChromaDB connected")
     except Exception as e:
         logger.error("ChromaDB connection failed: %s", e)

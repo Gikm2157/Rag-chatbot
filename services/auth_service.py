@@ -18,12 +18,20 @@ def _session_key(token: str) -> str:
 
 
 def _public_user(user: dict) -> dict:
-    return {
+    department_id = user.get("department_id")
+    department_name = user.get("department_name")
+    if department_id and department_name is None:
+        department = auth_db.get_department_by_id(department_id)
+        department_name = department["name"] if department else None
+    public_user = {
         "id": user["id"],
         "username": user["username"],
         "role": user["role"],
-        "department_id": user.get("department_id"),
+        "department_id": department_id,
     }
+    if department_name is not None:
+        public_user["department_name"] = department_name
+    return public_user
 
 
 def ensure_admin_user() -> None:
@@ -60,15 +68,53 @@ def authenticate(username: str, password: str) -> dict | None:
     return _public_user(user)
 
 
-def create_employee(username: str, password: str) -> dict:
+def create_employee(username: str, password: str, department_id: str) -> dict:
     user = auth_db.create_user(
         user_id=f"user-{create_session_token()[:16]}",
         username=username.strip(),
         password_hash=hash_password(password),
         role="employee",
+        department_id=department_id,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     return _public_user(user)
+
+
+def create_department(name: str) -> dict:
+    department_id = f"dept-{create_session_token()[:16]}"
+    return auth_db.create_department(
+        department_id=department_id,
+        name=name.strip(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def update_employee(
+    user_id: str,
+    username: str,
+    department_id: str,
+    password: str | None,
+) -> dict | None:
+    previous_department_id = auth_db.get_employee_department_id(user_id)
+    password_hash = hash_password(password) if password else None
+    user = auth_db.update_employee(
+        user_id=user_id,
+        username=username.strip(),
+        department_id=department_id,
+        password_hash=password_hash,
+    )
+    if user and previous_department_id != department_id:
+        # 员工跨部门后，旧部门对话记忆不能继续进入新部门的上下文。
+        redis.delete(user_id)
+    return _public_user(user) if user else None
+
+
+def delete_employee(user_id: str) -> bool:
+    deleted = auth_db.delete_employee(user_id)
+    if deleted:
+        # 对话记忆按用户 ID 存储；删除账号时一并清理，防止遗留个人会话内容。
+        redis.delete(user_id)
+    return deleted
 
 
 def create_session(user_id: str) -> str:

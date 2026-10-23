@@ -1,5 +1,6 @@
 export interface KnowledgeDocument {
   doc_id: string
+  department_id?: string
   status: string
   file_name?: string
   file_hash?: string
@@ -37,6 +38,12 @@ export interface AuthUser {
   username: string
   role: 'admin' | 'employee'
   department_id?: string | null
+  department_name?: string | null
+}
+
+export interface Department {
+  id: string
+  name: string
 }
 
 interface AuthResponse {
@@ -105,11 +112,60 @@ export function logout(): Promise<{ status: string }> {
   return request<{ status: string }>(`${API_BASE_URL}/auth/logout`, { method: 'POST' })
 }
 
-export function createEmployee(username: string, password: string): Promise<AuthUser> {
+export function listDepartments(): Promise<Department[]> {
+  return request<Department[]>(`${API_BASE_URL}/auth/departments`)
+}
+
+export function createDepartment(name: string): Promise<Department> {
+  return request<Department>(`${API_BASE_URL}/auth/departments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function updateDepartment(departmentId: string, name: string): Promise<Department> {
+  return request<Department>(`${API_BASE_URL}/auth/departments/${encodeURIComponent(departmentId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function deleteDepartment(departmentId: string): Promise<{ status: string; department_id: string }> {
+  return request<{ status: string; department_id: string }>(`${API_BASE_URL}/auth/departments/${encodeURIComponent(departmentId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function createEmployee(username: string, password: string, departmentId: string): Promise<AuthUser> {
   return request<AuthUser>(`${API_BASE_URL}/auth/users`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, department_id: departmentId }),
+  })
+}
+
+export function listEmployees(): Promise<AuthUser[]> {
+  return request<AuthUser[]>(`${API_BASE_URL}/auth/users`)
+}
+
+export function updateEmployee(
+  userId: string,
+  username: string,
+  departmentId: string,
+  password?: string,
+): Promise<AuthUser> {
+  return request<AuthUser>(`${API_BASE_URL}/auth/users/${encodeURIComponent(userId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, department_id: departmentId, ...(password ? { password } : {}) }),
+  })
+}
+
+export function deleteEmployee(userId: string): Promise<{ status: string; user_id: string }> {
+  return request<{ status: string; user_id: string }>(`${API_BASE_URL}/auth/users/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
   })
 }
 
@@ -125,9 +181,10 @@ export function listDocuments(): Promise<DocumentListResponse> {
   return request<DocumentListResponse>(`${API_BASE_URL}/ingest/docs?limit=50&offset=0`)
 }
 
-export function uploadDocument(fileName: string, file: File): Promise<IngestResponse> {
+export function uploadDocument(fileName: string, file: File, departmentId: string): Promise<IngestResponse> {
   const formData = new FormData()
   formData.append('file_name', fileName)
+  formData.append('department_id', departmentId)
   formData.append('file', file)
   return request<IngestResponse>(`${API_BASE_URL}/ingest/upload`, {
     method: 'POST',

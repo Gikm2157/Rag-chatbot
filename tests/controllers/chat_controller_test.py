@@ -69,6 +69,58 @@ def test_chat_returns_answer_and_sources(app_client, mock_vs, mock_llm):
     )
 
 
+def test_employee_retrieval_is_filtered_to_their_department(
+    app_client, mock_vs, mock_llm, set_current_user
+):
+    doc = LCDoc(
+        page_content="Sales handbook.",
+        metadata={"source_file": "sales.pdf", "doc_id": "sales", "department_id": "sales"},
+    )
+    mock_vs.similarity_search_with_relevance_scores.return_value = [(doc, 0.9)]
+    mock_vs.max_marginal_relevance_search.return_value = [doc]
+    set_current_user(user_id="sales-user", role="employee", department_id="sales")
+
+    response = app_client.post("/api/v1/chat", json={"q": "sales policy?"})
+
+    assert response.status_code == 200
+    mock_vs.similarity_search_with_relevance_scores.assert_called_once_with(
+        "sales policy?", k=10, filter={"department_id": "sales"}
+    )
+    mock_vs.max_marginal_relevance_search.assert_called_once_with(
+        "sales policy?",
+        k=3,
+        fetch_k=10,
+        filter={"$and": [{"doc_id": "sales"}, {"department_id": "sales"}]},
+    )
+
+
+def test_employee_without_department_is_denied_chat(app_client, set_current_user):
+    set_current_user(user_id="unassigned", role="employee", department_id=None)
+
+    response = app_client.post("/api/v1/chat", json={"q": "private policy?"})
+
+    assert response.status_code == 403
+
+
+def test_retrieval_discards_chunks_with_mismatched_department_metadata(
+    app_client, mock_vs, mock_llm, set_current_user
+):
+    other_department_doc = LCDoc(
+        page_content="Confidential HR handbook.",
+        metadata={"source_file": "hr.pdf", "doc_id": "hr", "department_id": "hr"},
+    )
+    mock_vs.similarity_search_with_relevance_scores.return_value = [(other_department_doc, 0.99)]
+    set_current_user(user_id="sales-user", role="employee", department_id="sales")
+
+    response = app_client.post("/api/v1/chat", json={"q": "policy?"})
+
+    assert response.status_code == 200
+    assert response.json()["sources"] == []
+    mock_vs.max_marginal_relevance_search.assert_not_called()
+    sent_messages = mock_llm.invoke.call_args.args[0]
+    assert all("Confidential HR handbook." not in message.content for message in sent_messages)
+
+
 def test_chat_strips_model_answer_whitespace(app_client, fake_redis, mock_llm):
     """模型回答两端的换行应被清理，避免界面出现大段空白。"""
     mock_llm.invoke.return_value = MagicMock(content="\n\n答案内容\n")

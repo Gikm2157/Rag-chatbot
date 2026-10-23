@@ -5,6 +5,7 @@ from langchain_core.messages import BaseMessage
 # State 是 LangGraph 流水线中各节点共享的数据容器，每个节点都可以读取并写回数据。
 class State(TypedDict):
     user_id: str
+    department_id: str | None
     question: str
     messages: list[BaseMessage]
     pending_messages: list[BaseMessage]

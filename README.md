@@ -130,15 +130,15 @@
 ```
 Rag-chatbot/
 ├── controllers/                    # HTTP API 路由：认证、聊天、文档导入和管理
-│   ├── auth_controller.py          # 登录、退出、当前用户和员工账号创建
+│   ├── auth_controller.py          # 登录、部门管理、员工账号管理
 │   ├── chat_controller.py
 │   └── ingest_controller.py
 ├── schemas/                        # 请求/响应数据结构及输入校验
-│   ├── auth.py                     # 登录与创建员工账号的数据结构
+│   ├── auth.py                     # 登录、部门和员工账号的数据结构
 │   ├── chat.py
 │   └── ingest.py
 ├── services/                       # API 与业务流程之间的服务层
-│   ├── auth_service.py             # 认证、账号创建和会话管理
+│   ├── auth_service.py             # 认证、账号管理和会话管理
 │   ├── chat_service.py             # 调用 LangGraph 并返回聊天结果
 │   └── ingest_service.py           # 编排文档导入、状态和清理操作
 ├── graph/                          # LangGraph 对话工作流
@@ -150,7 +150,7 @@ Rag-chatbot/
 ├── db/                             # Redis 记忆与 ChromaDB 向量库访问
 │   ├── redis_client.py
 │   ├── vector.py
-│   └── auth_db.py                  # SQLite 用户数据访问
+│   └── auth_db.py                  # SQLite 用户与部门数据访问
 ├── auth/                           # 密码哈希和会话令牌工具
 ├── dependencies/                   # FastAPI 登录和角色权限依赖
 ├── utils/                          # LLM 与 Embedding 模型适配器
@@ -174,7 +174,7 @@ Rag-chatbot/
 ├── logs/                           # 应用运行日志
 ├── frontend/                       # Vue 3 + Vite 前端展示页
 │   ├── src/api.ts                  # 调用 FastAPI 的接口封装
-│   ├── src/App.vue                 # 聊天、上传和文档管理页面
+│   ├── src/App.vue                 # 问答工作台和管理员管理中心
 │   └── src/style.css               # 页面样式和响应式布局
 ├── .github/workflows/ci.yml        # GitHub Actions 自动测试流程
 ├── main.py                         # FastAPI 应用入口
@@ -205,6 +205,8 @@ Rag-chatbot/
 * 查看和删除已导入文档
 * 发送企业制度问题并查看回答来源
 * 查看后端健康状态和请求加载状态
+* 管理员可切换问答工作台和管理中心，管理部门、员工账号与文档
+* 员工只能访问问答工作台，并可查看自己的部门名称
 
 启动后端后，另开终端运行：
 
@@ -226,11 +228,11 @@ VITE_API_BASE_URL=http://localhost:8000/api/v1
 npm run build
 ```
 
-当前前端使用登录 Cookie 区分用户会话；`X-User-ID` 已不再作为认证依据。多部门知识库和流式输出属于后续阶段功能。
+当前前端使用登录 Cookie 区分用户会话；`X-User-ID` 已不再作为认证依据。多部门隔离已接入文档列表和 RAG 检索；流式输出仍属于后续阶段功能。
 
-### 🔐 认证基础（第二阶段进行中）
+### 🔐 认证与部门隔离
 
-当前已将认证接入聊天和文档接口：员工登录后可以问答和查看文档，管理员才可以上传、导入和删除文档。
+当前已将认证和部门隔离接入聊天与文档接口：员工登录后只能检索本部门知识库，管理员可以维护部门、员工账号以及全部知识库文档。
 
 认证流程如下：
 
@@ -238,8 +240,9 @@ npm run build
 2. 管理员账号由 `AUTH_ADMIN_USERNAME` 和 `AUTH_ADMIN_PASSWORD` 在首次启动时创建，不提供公开注册接口。
 3. 登录成功后生成随机会话令牌，令牌只保存在 Redis，浏览器只通过 HttpOnly Cookie 携带它。
 4. `/api/v1/auth/me` 根据会话读取当前用户，`/api/v1/auth/logout` 删除会话。
-5. 管理员可以通过 `/api/v1/auth/users` 创建员工账号；系统没有公开注册接口。
-6. 浏览器写请求还会检查 `Origin`，只允许 `.env` 中 `CORS_ORIGINS` 列出的前端地址。
+5. 管理员可以创建、修改和删除员工账号；修改部门后会清除员工原部门的对话记忆，删除账号后其会话失效。
+6. 部门可以改名；默认部门不能删除，有员工或知识库文档的部门不能删除。
+7. 浏览器写请求还会检查 `Origin`，只允许 `.env` 中 `CORS_ORIGINS` 列出的前端地址。
 
 在本地 `.env` 中配置初始管理员后重启后端：
 
@@ -397,10 +400,15 @@ http://127.0.0.1:8000/redoc    # ReDoc：简洁的只读参考文档
 | `POST /api/v1/auth/login` | 公开 | 登录并设置 HttpOnly 会话 Cookie |
 | `GET /api/v1/auth/me` | 已登录 | 返回当前用户与角色 |
 | `POST /api/v1/auth/logout` | 已登录或匿名 | 使当前会话失效 |
-| `POST /api/v1/auth/users` | 管理员 | 创建员工账号，不开放公开注册 |
+| `GET /api/v1/auth/users`、`POST /api/v1/auth/users` | 管理员 | 查看员工列表、创建员工账号 |
+| `PUT /api/v1/auth/users/{user_id}`、`DELETE /api/v1/auth/users/{user_id}` | 管理员 | 修改或删除员工账号 |
+| `GET /api/v1/auth/departments`、`POST /api/v1/auth/departments` | 管理员 | 查看或创建部门 |
+| `PUT /api/v1/auth/departments/{department_id}`、`DELETE /api/v1/auth/departments/{department_id}` | 管理员 | 修改或删除部门（有员工或文档时拒绝删除） |
 | `POST /api/v1/chat` | 已登录 | 使用当前账号 ID 隔离对话记忆 |
 | `GET /api/v1/ingest/docs`、`GET /api/v1/ingest/{doc_id}` | 已登录 | 查看知识库文档 |
 | `POST /api/v1/ingest`、`POST /api/v1/ingest/upload`、`DELETE /api/v1/ingest/{doc_id}` | 管理员 | 导入或删除文档 |
+
+管理员先创建部门，再创建员工并指定部门；上传文档时也要选择所属部门。员工的文档列表、文档状态查询和 RAG 检索都会限制在其所属部门，管理员可以查看全部部门文档。升级时旧员工和旧文档会自动归入“默认部门”，旧向量会补充部门元数据。当前文档 ID 在全系统范围内唯一，不同部门的文档请使用不同 ID。
 
 ## 💬 8. 聊天 API
 

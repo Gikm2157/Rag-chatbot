@@ -57,17 +57,17 @@ def test_admin_can_create_employee_account(app_client):
             "id": "employee-1",
             "username": "new_employee",
             "role": "employee",
-            "department_id": None,
+                "department_id": "default",
         },
     ) as create_employee:
         response = app_client.post(
             "/api/v1/auth/users",
-            json={"username": "new_employee", "password": "password123"},
+            json={"username": "new_employee", "password": "password123", "department_id": "default"},
         )
 
     assert response.status_code == 201
     assert response.json()["role"] == "employee"
-    create_employee.assert_called_once_with("new_employee", "password123")
+    create_employee.assert_called_once_with("new_employee", "password123", "default")
 
 
 def test_employee_cannot_create_another_account(app_client, set_current_user):
@@ -75,8 +75,158 @@ def test_employee_cannot_create_another_account(app_client, set_current_user):
 
     response = app_client.post(
         "/api/v1/auth/users",
-        json={"username": "another_employee", "password": "password123"},
+        json={"username": "another_employee", "password": "password123", "department_id": "default"},
     )
 
     assert response.status_code == 403
     assert response.json()["detail"] == "需要管理员权限"
+
+
+def test_admin_cannot_create_employee_in_unknown_department(app_client):
+    with patch("controllers.auth_controller.auth_db.get_department_by_id", return_value=None):
+        response = app_client.post(
+            "/api/v1/auth/users",
+            json={
+                "username": "new_employee",
+                "password": "password123",
+                "department_id": "missing-department",
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "部门不存在"
+
+
+def test_admin_can_create_department(app_client):
+    with patch(
+        "controllers.auth_controller.create_department",
+        return_value={"id": "dept-sales", "name": "销售部"},
+    ) as create_department:
+        response = app_client.post("/api/v1/auth/departments", json={"name": "销售部"})
+
+    assert response.status_code == 201
+    assert response.json() == {"id": "dept-sales", "name": "销售部"}
+    create_department.assert_called_once_with("销售部")
+
+
+def test_employee_cannot_list_departments(app_client, set_current_user):
+    set_current_user(user_id="employee-1", role="employee", department_id="default")
+
+    response = app_client.get("/api/v1/auth/departments")
+
+    assert response.status_code == 403
+
+
+def test_admin_can_list_employee_accounts(app_client):
+    employees = [{
+        "id": "employee-1",
+        "username": "staff",
+        "role": "employee",
+        "department_id": "sales",
+        "department_name": "销售部",
+    }]
+    with patch("controllers.auth_controller.auth_db.list_employees", return_value=employees):
+        response = app_client.get("/api/v1/auth/users")
+
+    assert response.status_code == 200
+    assert response.json()[0]["department_name"] == "销售部"
+
+
+def test_employee_cannot_manage_employee_accounts(app_client, set_current_user):
+    set_current_user(user_id="employee-1", role="employee", department_id="default")
+
+    listed = app_client.get("/api/v1/auth/users")
+    updated = app_client.put(
+        "/api/v1/auth/users/employee-2",
+        json={"username": "staff", "department_id": "default"},
+    )
+    deleted = app_client.delete("/api/v1/auth/users/employee-2")
+
+    assert [listed.status_code, updated.status_code, deleted.status_code] == [403, 403, 403]
+
+
+def test_admin_can_update_employee_account(app_client):
+    with patch(
+        "controllers.auth_controller.update_employee",
+        return_value={
+            "id": "employee-1",
+            "username": "staff-renamed",
+            "role": "employee",
+            "department_id": "default",
+            "department_name": "默认部门",
+        },
+    ) as update:
+        response = app_client.put(
+            "/api/v1/auth/users/employee-1",
+            json={"username": "staff-renamed", "department_id": "default"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["username"] == "staff-renamed"
+    update.assert_called_once_with("employee-1", "staff-renamed", "default", None)
+
+
+def test_admin_can_delete_employee_account(app_client):
+    with patch("controllers.auth_controller.delete_employee", return_value=True) as delete:
+        response = app_client.delete("/api/v1/auth/users/employee-1")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "deleted", "user_id": "employee-1"}
+    delete.assert_called_once_with("employee-1")
+
+
+def test_admin_can_update_department_name(app_client):
+    with patch(
+        "controllers.auth_controller.auth_db.update_department",
+        return_value={"id": "dept-sales", "name": "销售运营部"},
+    ) as update:
+        response = app_client.put(
+            "/api/v1/auth/departments/dept-sales",
+            json={"name": "销售运营部"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"id": "dept-sales", "name": "销售运营部"}
+    update.assert_called_once_with("dept-sales", "销售运营部")
+
+
+def test_default_department_cannot_be_deleted(app_client):
+    response = app_client.delete("/api/v1/auth/departments/default")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "默认部门不可删除"
+
+
+def test_department_with_documents_cannot_be_deleted(app_client, fake_redis):
+    fake_redis.sadd("ingest:doc_ids", "sales-guide")
+    fake_redis.hset(
+        "ingest_status:sales-guide",
+        mapping={"status": "done", "department_id": "dept-sales"},
+    )
+
+    response = app_client.delete("/api/v1/auth/departments/dept-sales")
+
+    assert response.status_code == 409
+    assert "关联文档" in response.json()["detail"]
+
+
+def test_department_with_employees_cannot_be_deleted(app_client):
+    with patch(
+        "controllers.auth_controller.auth_db.get_department_by_id",
+        return_value={"id": "dept-sales", "name": "销售部"},
+    ), patch("controllers.auth_controller.auth_db.delete_department", return_value=False):
+        response = app_client.delete("/api/v1/auth/departments/dept-sales")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该部门仍有关联员工，不能删除"
+
+
+def test_admin_can_delete_empty_department(app_client):
+    with patch(
+        "controllers.auth_controller.auth_db.get_department_by_id",
+        return_value={"id": "dept-sales", "name": "销售部"},
+    ), patch("controllers.auth_controller.auth_db.delete_department", return_value=True):
+        response = app_client.delete("/api/v1/auth/departments/dept-sales")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "deleted", "department_id": "dept-sales"}

@@ -5,14 +5,22 @@ import {
   ApiError,
   chat,
   checkHealth,
+  createDepartment,
   createEmployee,
+  deleteDepartment,
   deleteDocument,
+  deleteEmployee,
   getCurrentUser,
   login,
   logout,
   listDocuments,
+  listDepartments,
+  listEmployees,
   uploadDocument,
+  updateDepartment,
+  updateEmployee,
   type AuthUser,
+  type Department,
   type KnowledgeDocument,
 } from './api'
 
@@ -38,6 +46,20 @@ const isLoggingIn = ref(false)
 const newEmployeeUsername = ref('')
 const newEmployeePassword = ref('')
 const isCreatingEmployee = ref(false)
+const newDepartmentName = ref('')
+const isCreatingDepartment = ref(false)
+const departments = ref<Department[]>([])
+const employees = ref<AuthUser[]>([])
+const adminView = ref<'chat' | 'manage'>('chat')
+const managementTab = ref<'departments' | 'employees' | 'documents'>('departments')
+const editingDepartmentId = ref<string | null>(null)
+const editingDepartmentName = ref('')
+const editingEmployeeId = ref<string | null>(null)
+const editingEmployeeUsername = ref('')
+const editingEmployeeDepartmentId = ref('default')
+const editingEmployeePassword = ref('')
+const uploadDepartmentId = ref('default')
+const employeeDepartmentId = ref('default')
 const isSending = ref(false)
 const isUploading = ref(false)
 const documents = ref<KnowledgeDocument[]>([])
@@ -62,6 +84,8 @@ function setNotice(type: 'success' | 'error', text: string) {
 function clearSession() {
   currentUser.value = null
   documents.value = []
+  departments.value = []
+  employees.value = []
 }
 
 function handleUnauthorized(error: unknown): boolean {
@@ -79,6 +103,26 @@ async function refreshDocuments() {
   } catch (error) {
     if (handleUnauthorized(error)) return
     setNotice('error', error instanceof Error ? error.message : '读取文档列表失败')
+  }
+}
+
+async function refreshManagementData() {
+  if (!isAdmin.value) return
+  try {
+    const [departmentList, employeeList, documentList] = await Promise.all([
+      listDepartments(),
+      listEmployees(),
+      listDocuments(),
+    ])
+    departments.value = departmentList
+    employees.value = employeeList
+    documents.value = documentList.docs
+    const fallbackDepartmentId = departmentList[0]?.id || 'default'
+    if (!departmentList.some((department) => department.id === uploadDepartmentId.value)) uploadDepartmentId.value = fallbackDepartmentId
+    if (!departmentList.some((department) => department.id === employeeDepartmentId.value)) employeeDepartmentId.value = fallbackDepartmentId
+  } catch (error) {
+    if (handleUnauthorized(error)) return
+    setNotice('error', error instanceof Error ? error.message : '读取管理数据失败')
   }
 }
 
@@ -134,6 +178,7 @@ function handleQuestionKeydown(event: KeyboardEvent) {
 function handleFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0] || null
+  input.value = ''
   selectedFile.value = file
   if (file) {
     documentId.value = file.name.replace(/\.pdf$/i, '').replace(/[^\w\u4e00-\u9fff-]+/g, '_').slice(0, 128)
@@ -154,12 +199,16 @@ async function handleUpload() {
 
   isUploading.value = true
   try {
-    const result = await uploadDocument(documentId.value.trim(), selectedFile.value)
+    const result = await uploadDocument(
+      documentId.value.trim(),
+      selectedFile.value,
+      uploadDepartmentId.value,
+    )
     const data = result.data
     setNotice('success', `文档${data.status === 'skipped' ? '无需更新' : '导入完成'}：${data.doc_id}`)
     selectedFile.value = null
     documentId.value = ''
-    await refreshDocuments()
+    await refreshManagementData()
   } catch (error) {
     if (handleUnauthorized(error)) return
     setNotice('error', error instanceof Error ? error.message : '文档导入失败')
@@ -177,7 +226,7 @@ async function handleDelete(document: KnowledgeDocument) {
   try {
     await deleteDocument(document.doc_id)
     setNotice('success', `已删除文档：${document.doc_id}`)
-    await refreshDocuments()
+    await refreshManagementData()
   } catch (error) {
     if (handleUnauthorized(error)) return
     setNotice('error', error instanceof Error ? error.message : '删除文档失败')
@@ -197,6 +246,11 @@ function formatDate(value?: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function departmentLabel(departmentId?: string) {
+  if (!departmentId) return '未分配部门'
+  return departments.value.find((department) => department.id === departmentId)?.name || '未知部门'
+}
+
 async function handleLogin() {
   const username = loginUsername.value.trim()
   if (!username || !loginPassword.value || isLoggingIn.value) return
@@ -209,7 +263,8 @@ async function handleLogin() {
     messages.value = [{ role: 'assistant', content: welcomeMessage }]
     loginPassword.value = ''
     setNotice('success', `欢迎，${authenticatedUser.username}`)
-    await refreshDocuments()
+    if (authenticatedUser.role === 'admin') await refreshManagementData()
+    else await refreshDocuments()
   } catch (error) {
     clearSession()
     setNotice('error', error instanceof Error ? error.message : '登录失败')
@@ -223,15 +278,117 @@ async function handleCreateEmployee() {
   if (!username || !newEmployeePassword.value || isCreatingEmployee.value) return
   isCreatingEmployee.value = true
   try {
-    const user = await createEmployee(username, newEmployeePassword.value)
+    const user = await createEmployee(
+      username,
+      newEmployeePassword.value,
+      employeeDepartmentId.value,
+    )
     newEmployeeUsername.value = ''
     newEmployeePassword.value = ''
     setNotice('success', `员工账号 ${user.username} 已创建`)
+    await refreshManagementData()
   } catch (error) {
     if (handleUnauthorized(error)) return
     setNotice('error', error instanceof Error ? error.message : '创建员工账号失败')
   } finally {
     isCreatingEmployee.value = false
+  }
+}
+
+async function handleCreateDepartment() {
+  const name = newDepartmentName.value.trim()
+  if (!name || isCreatingDepartment.value) return
+  isCreatingDepartment.value = true
+  try {
+    const department = await createDepartment(name)
+    departments.value = [...departments.value, department].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+    uploadDepartmentId.value = department.id
+    employeeDepartmentId.value = department.id
+    newDepartmentName.value = ''
+    setNotice('success', `部门 ${department.name} 已创建`)
+  } catch (error) {
+    if (handleUnauthorized(error)) return
+    setNotice('error', error instanceof Error ? error.message : '创建部门失败')
+  } finally {
+    isCreatingDepartment.value = false
+  }
+}
+
+function beginEditDepartment(department: Department) {
+  editingDepartmentId.value = department.id
+  editingDepartmentName.value = department.name
+}
+
+async function saveDepartment(department: Department) {
+  const name = editingDepartmentName.value.trim()
+  if (!name) return
+  try {
+    await updateDepartment(department.id, name)
+    editingDepartmentId.value = null
+    await refreshManagementData()
+    setNotice('success', '部门名称已更新')
+  } catch (error) {
+    if (handleUnauthorized(error)) return
+    setNotice('error', error instanceof Error ? error.message : '修改部门失败')
+  }
+}
+
+async function handleDeleteDepartment(department: Department) {
+  if (department.id === 'default') {
+    setNotice('error', '默认部门不可删除')
+    return
+  }
+  if (!window.confirm(`确定删除部门“${department.name}”吗？部门必须没有员工和知识库文档。`)) return
+  try {
+    await deleteDepartment(department.id)
+    await refreshManagementData()
+    setNotice('success', `部门 ${department.name} 已删除`)
+  } catch (error) {
+    if (handleUnauthorized(error)) return
+    setNotice('error', error instanceof Error ? error.message : '删除部门失败')
+  }
+}
+
+function beginEditEmployee(employee: AuthUser) {
+  editingEmployeeId.value = employee.id
+  editingEmployeeUsername.value = employee.username
+  editingEmployeeDepartmentId.value = employee.department_id || 'default'
+  editingEmployeePassword.value = ''
+}
+
+async function saveEmployee(employee: AuthUser) {
+  const username = editingEmployeeUsername.value.trim()
+  if (!username) return
+  if (editingEmployeePassword.value && editingEmployeePassword.value.length < 8) {
+    setNotice('error', '新密码至少需要 8 位')
+    return
+  }
+  try {
+    await updateEmployee(
+      employee.id,
+      username,
+      editingEmployeeDepartmentId.value,
+      editingEmployeePassword.value || undefined,
+    )
+    editingEmployeeId.value = null
+    editingEmployeePassword.value = ''
+    await refreshManagementData()
+    setNotice('success', `员工账号 ${username} 已更新`)
+  } catch (error) {
+    if (handleUnauthorized(error)) return
+    setNotice('error', error instanceof Error ? error.message : '修改员工失败')
+  }
+}
+
+async function handleDeleteEmployee(employee: AuthUser) {
+  if (!window.confirm(`确定删除员工账号“${employee.username}”吗？该员工将立即退出登录，对话记忆也会清除。`)) return
+  try {
+    await deleteEmployee(employee.id)
+    await refreshManagementData()
+    setNotice('success', `员工账号 ${employee.username} 已删除`)
+  } catch (error) {
+    if (handleUnauthorized(error)) return
+    setNotice('error', error instanceof Error ? error.message : '删除员工失败')
   }
 }
 
@@ -243,6 +400,9 @@ async function handleLogout() {
   } finally {
     currentUser.value = null
     documents.value = []
+    departments.value = []
+    employees.value = []
+    adminView.value = 'chat'
     messages.value = [{ role: 'assistant', content: welcomeMessage }]
   }
 }
@@ -251,7 +411,11 @@ async function restoreSession() {
   isCheckingAuth.value = true
   try {
     currentUser.value = await getCurrentUser()
-    await refreshDocuments()
+    if (currentUser.value.role === 'admin') {
+      await refreshManagementData()
+    } else {
+      await refreshDocuments()
+    }
   } catch {
     currentUser.value = null
   } finally {
@@ -280,10 +444,14 @@ onBeforeUnmount(() => {
           <h1>企业知识库客服</h1>
         </div>
       </div>
+      <nav v-if="isAdmin" class="top-navigation" aria-label="管理员导航">
+        <button :class="{ active: adminView === 'chat' }" @click="adminView = 'chat'">问答工作台</button>
+        <button :class="{ active: adminView === 'manage' }" @click="adminView = 'manage'">管理中心</button>
+      </nav>
       <div class="topbar-meta">
         <span class="api-address">API · {{ API_BASE_URL }}</span>
         <span v-if="currentUser" class="user-pill">
-          {{ currentUser.username }} · {{ isAdmin ? '管理员' : '员工' }}
+          {{ currentUser.username }} · {{ isAdmin ? '管理员' : (currentUser.department_name || '未分配部门') }}
         </span>
         <button v-if="currentUser" class="text-button" @click="handleLogout">退出</button>
         <span class="health-pill" :class="`health-${health}`">
@@ -326,102 +494,14 @@ onBeforeUnmount(() => {
       </form>
     </main>
 
-    <main v-else class="workspace">
-      <aside class="sidebar">
-        <section class="side-section intro-card">
-          <span class="section-kicker">内部助手</span>
-          <h2>让制度查找更简单</h2>
-          <p>上传员工手册和企业制度，新员工可以直接通过对话了解工作规则。</p>
-        </section>
-
-        <section v-if="isAdmin" class="side-section">
-          <div class="section-heading">
-            <div>
-              <span class="section-kicker">知识库管理</span>
-              <h3>导入文档</h3>
-            </div>
-            <span class="doc-count">{{ documents.length }} 份</span>
-          </div>
-          <label class="file-dropzone" :class="{ selected: selectedFile }">
-            <input type="file" accept="application/pdf,.pdf" @change="handleFileChange" />
-            <span class="upload-icon">↑</span>
-            <strong>{{ selectedFile ? selectedFile.name : '选择 PDF 文件' }}</strong>
-            <small>{{ selectedFile ? '已选择，准备导入' : '最大支持 50 MB' }}</small>
-          </label>
-          <label class="field-label" for="document-id">文档 ID</label>
-          <input id="document-id" v-model="documentId" class="text-input" maxlength="128" placeholder="例如：员工手册" />
-          <button class="primary-button full-width" :disabled="!canUpload" @click="handleUpload">
-            <span v-if="isUploading" class="button-spinner"></span>
-            {{ isUploading ? '正在导入…' : '导入知识库' }}
-          </button>
-        </section>
-
-        <section v-if="isAdmin" class="side-section">
-          <div class="section-heading">
-            <div>
-              <span class="section-kicker">账号管理</span>
-              <h3>创建员工账号</h3>
-            </div>
-          </div>
-          <form class="admin-form" @submit.prevent="handleCreateEmployee">
-            <label class="field-label" for="new-employee-username">用户名</label>
-            <input
-              id="new-employee-username"
-              v-model="newEmployeeUsername"
-              class="text-input"
-              autocomplete="off"
-              maxlength="64"
-              required
-            />
-            <label class="field-label" for="new-employee-password">初始密码</label>
-            <input
-              id="new-employee-password"
-              v-model="newEmployeePassword"
-              class="text-input"
-              type="password"
-              autocomplete="new-password"
-              minlength="8"
-              maxlength="128"
-              required
-            />
-            <button class="secondary-button full-width" type="submit" :disabled="isCreatingEmployee">
-              {{ isCreatingEmployee ? '正在创建…' : '创建员工账号' }}
-            </button>
-          </form>
-        </section>
-
-        <section class="side-section document-section">
-          <div class="section-heading">
-            <div>
-              <span class="section-kicker">已导入内容</span>
-              <h3>文档列表</h3>
-            </div>
-            <button class="text-button" @click="refreshDocuments">刷新</button>
-          </div>
-          <div v-if="documents.length" class="document-list">
-            <article v-for="document in documents" :key="document.doc_id" class="document-item">
-              <div class="document-icon">PDF</div>
-              <div class="document-info">
-                <strong :title="document.doc_id">{{ document.doc_id }}</strong>
-                <span>{{ document.total_chunks || 0 }} 个文本块 · {{ formatDate(document.updated_at) }}</span>
-              </div>
-              <button v-if="isAdmin" class="delete-button" :aria-label="`删除 ${document.doc_id}`" @click="handleDelete(document)">×</button>
-            </article>
-          </div>
-          <div v-else class="empty-documents">
-            <span>⌁</span>
-            <p>还没有导入文档</p>
-            <small>上传一份 PDF 开始构建知识库</small>
-          </div>
-        </section>
-      </aside>
-
+    <main v-else-if="!isAdmin || adminView === 'chat'" class="chat-layout">
       <section class="chat-panel">
         <div class="chat-heading">
           <div>
             <span class="section-kicker">AI KNOWLEDGE ASSISTANT</span>
             <h2>员工制度问答</h2>
-            <p>回答仅基于已导入的企业知识库资料</p>
+            <p v-if="!isAdmin">{{ currentUser.department_name || '所属部门未知' }} · 回答仅基于本部门已导入的知识库资料</p>
+            <p v-else>回答仅基于已导入的企业知识库资料</p>
           </div>
           <button class="clear-button" @click="clearConversation">清空对话</button>
         </div>
@@ -456,6 +536,138 @@ onBeforeUnmount(() => {
               <span aria-hidden="true">→</span>
             </button>
           </div>
+        </div>
+      </section>
+    </main>
+
+    <main v-else class="management-page">
+      <div class="management-heading">
+        <div>
+          <span class="section-kicker">ADMINISTRATION</span>
+          <h2>管理中心</h2>
+          <p>管理工作室部门、员工账号和知识库文档</p>
+        </div>
+        <div class="management-summary">
+          <span>{{ departments.length }} 个部门</span>
+          <span>{{ employees.length }} 名员工</span>
+          <span>{{ documents.length }} 份文档</span>
+        </div>
+      </div>
+
+      <nav class="management-tabs" aria-label="管理类别">
+        <button :class="{ active: managementTab === 'departments' }" @click="managementTab = 'departments'">部门</button>
+        <button :class="{ active: managementTab === 'employees' }" @click="managementTab = 'employees'">员工</button>
+        <button :class="{ active: managementTab === 'documents' }" @click="managementTab = 'documents'">知识库文档</button>
+        <button class="refresh-management" title="刷新管理数据" aria-label="刷新管理数据" @click="refreshManagementData">↻</button>
+      </nav>
+
+      <section v-if="managementTab === 'departments'" class="management-content">
+        <form class="create-row department-create" @submit.prevent="handleCreateDepartment">
+          <div><strong>新增部门</strong><span>新部门将拥有独立的文档检索范围</span></div>
+          <input v-model="newDepartmentName" class="text-input" maxlength="64" placeholder="输入部门名称" required />
+          <button class="primary-button" type="submit" :disabled="isCreatingDepartment">{{ isCreatingDepartment ? '创建中…' : '创建部门' }}</button>
+        </form>
+        <div class="table-wrap">
+          <table class="management-table">
+            <thead><tr><th>部门名称</th><th>部门 ID</th><th>保护规则</th><th class="actions-cell">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="department in departments" :key="department.id">
+                <td>
+                  <input v-if="editingDepartmentId === department.id" v-model="editingDepartmentName" class="table-input" maxlength="64" />
+                  <strong v-else>{{ department.name }}</strong>
+                </td>
+                <td><code>{{ department.id }}</code></td>
+                <td><span v-if="department.id === 'default'" class="subtle-label">默认部门，不可删除</span><span v-else class="subtle-label">有员工或文档时不可删除</span></td>
+                <td class="actions-cell">
+                  <template v-if="editingDepartmentId === department.id">
+                    <button class="table-action primary-action" @click="saveDepartment(department)">保存</button>
+                    <button class="table-action" @click="editingDepartmentId = null">取消</button>
+                  </template>
+                  <template v-else>
+                    <button class="table-action" @click="beginEditDepartment(department)">编辑</button>
+                    <button class="table-action danger-action" :disabled="department.id === 'default'" @click="handleDeleteDepartment(department)">删除</button>
+                  </template>
+                </td>
+              </tr>
+              <tr v-if="departments.length === 0"><td colspan="4" class="empty-row">暂无部门</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section v-else-if="managementTab === 'employees'" class="management-content">
+        <form class="create-row employee-create" @submit.prevent="handleCreateEmployee">
+          <div><strong>新增员工账号</strong><span>初始密码至少 8 位</span></div>
+          <input v-model="newEmployeeUsername" class="text-input" autocomplete="off" maxlength="64" placeholder="用户名" required />
+          <input v-model="newEmployeePassword" class="text-input" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="初始密码" required />
+          <select v-model="employeeDepartmentId" class="text-input" required>
+            <option v-for="department in departments" :key="department.id" :value="department.id">{{ department.name }}</option>
+          </select>
+          <button class="primary-button" type="submit" :disabled="isCreatingEmployee">{{ isCreatingEmployee ? '创建中…' : '创建账号' }}</button>
+        </form>
+        <div class="table-wrap">
+          <table class="management-table employee-table">
+            <thead><tr><th>用户名</th><th>所属部门</th><th>员工 ID / 重置密码</th><th class="actions-cell">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="employee in employees" :key="employee.id">
+                <td>
+                  <input v-if="editingEmployeeId === employee.id" v-model="editingEmployeeUsername" class="table-input" maxlength="64" />
+                  <strong v-else>{{ employee.username }}</strong>
+                </td>
+                <td>
+                  <select v-if="editingEmployeeId === employee.id" v-model="editingEmployeeDepartmentId" class="table-input">
+                    <option v-for="department in departments" :key="department.id" :value="department.id">{{ department.name }}</option>
+                  </select>
+                  <span v-else>{{ employee.department_name || departmentLabel(employee.department_id || undefined) }}</span>
+                </td>
+                <td>
+                  <input v-if="editingEmployeeId === employee.id" v-model="editingEmployeePassword" class="table-input" type="password" minlength="8" maxlength="128" placeholder="留空不修改" />
+                  <span v-else class="subtle-label">{{ employee.id }}</span>
+                </td>
+                <td class="actions-cell">
+                  <template v-if="editingEmployeeId === employee.id">
+                    <button class="table-action primary-action" @click="saveEmployee(employee)">保存</button>
+                    <button class="table-action" @click="editingEmployeeId = null">取消</button>
+                  </template>
+                  <template v-else>
+                    <button class="table-action" @click="beginEditEmployee(employee)">编辑</button>
+                    <button class="table-action danger-action" @click="handleDeleteEmployee(employee)">删除</button>
+                  </template>
+                </td>
+              </tr>
+              <tr v-if="employees.length === 0"><td colspan="4" class="empty-row">暂无员工账号</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section v-else class="management-content">
+        <form class="create-row document-create" @submit.prevent="handleUpload">
+          <label class="file-picker" :class="{ selected: selectedFile }">
+            <input type="file" accept="application/pdf,.pdf" @change="handleFileChange" />
+            <span>{{ selectedFile ? selectedFile.name : '选择 PDF' }}</span>
+          </label>
+          <input v-model="documentId" class="text-input" maxlength="128" placeholder="文档 ID" required />
+          <select v-model="uploadDepartmentId" class="text-input" required>
+            <option v-for="department in departments" :key="department.id" :value="department.id">{{ department.name }}</option>
+          </select>
+          <button class="primary-button" type="submit" :disabled="!canUpload">{{ isUploading ? '导入中…' : '导入 PDF' }}</button>
+        </form>
+        <div class="table-wrap">
+          <table class="management-table document-table">
+            <thead><tr><th>文档 ID</th><th>所属部门</th><th>文本块</th><th>状态</th><th>更新时间</th><th class="actions-cell">操作</th></tr></thead>
+            <tbody>
+              <tr v-for="document in documents" :key="document.doc_id">
+                <td><strong>{{ document.doc_id }}</strong></td>
+                <td>{{ departmentLabel(document.department_id) }}</td>
+                <td>{{ document.total_chunks || 0 }}</td>
+                <td><span class="status-label">{{ document.status }}</span></td>
+                <td>{{ formatDate(document.updated_at) }}</td>
+                <td class="actions-cell"><button class="table-action danger-action" @click="handleDelete(document)">删除</button></td>
+              </tr>
+              <tr v-if="documents.length === 0"><td colspan="6" class="empty-row">还没有导入文档</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
     </main>

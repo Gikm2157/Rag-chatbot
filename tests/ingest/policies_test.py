@@ -161,6 +161,7 @@ def test_chunks_have_correct_metadata(pdf_v1_bytes, ingest_env):
     assert len(results["ids"]) > 0
     for meta in results["metadatas"]:
         assert meta["doc_id"] == FILE_NAME
+        assert meta["department_id"] == "default"
         assert meta["source_file"] == FILE_NAME
         assert "chunk_hash" in meta
         assert "version" in meta
@@ -266,6 +267,52 @@ def test_global_content_hash_registered(pdf_v1_bytes, ingest_env):
 
     registered = fake_redis.hgetall("ingest:content_hashes")
     assert FILE_NAME in registered.values()
+
+
+def test_same_pdf_can_be_ingested_separately_by_two_departments(
+    pdf_v1_bytes, ingest_env
+):
+    fake_redis, vectorstore = ingest_env
+
+    default_result = process_policy(
+        "default_policy",
+        uploaded_file=BytesIO(pdf_v1_bytes),
+        department_id="default",
+    )
+    sales_result = process_policy(
+        "sales_policy",
+        uploaded_file=BytesIO(pdf_v1_bytes),
+        department_id="sales",
+    )
+
+    assert default_result["status"] == "done"
+    assert sales_result["status"] == "done"
+    registered_hashes = fake_redis.hgetall("ingest:content_hashes")
+    default_hash = fake_redis.hget("ingest_status:default_policy", "file_hash")
+    sales_hash = fake_redis.hget("ingest_status:sales_policy", "file_hash")
+    assert registered_hashes[default_hash] == "default_policy"
+    assert registered_hashes[f"sales:{sales_hash}"] == "sales_policy"
+    assert vectorstore._collection.get(where={"department_id": "sales"})["ids"]
+
+
+def test_document_id_cannot_be_reassigned_to_another_department(
+    pdf_v1_bytes, pdf_v2_bytes, ingest_env
+):
+    process_policy(
+        "shared_policy",
+        uploaded_file=BytesIO(pdf_v1_bytes),
+        department_id="default",
+    )
+
+    with pytest.raises(ValueError, match="已被其他部门使用"):
+        process_policy(
+            "shared_policy",
+            uploaded_file=BytesIO(pdf_v2_bytes),
+            department_id="sales",
+        )
+
+    fake_redis, _ = ingest_env
+    assert fake_redis.hget("ingest_status:shared_policy", "department_id") == "default"
 
 
 # ── 16. 文档变化时删除旧全局哈希 ─────────────────────────────────────────────

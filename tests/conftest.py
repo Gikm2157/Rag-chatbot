@@ -220,10 +220,15 @@ def app_client(fake_redis, mock_vs, mock_llm):
          patch("graph.nodes.summarize._get_chat", return_value=mock_llm), \
          patch("middlewares.rate_limiter.get_redis", return_value=fake_redis), \
          patch("controllers.ingest_controller.redis", fake_redis), \
+         patch("controllers.auth_controller.redis", fake_redis), \
          patch("controllers.ingest_controller.get_vectorstore", return_value=mock_vs), \
          patch("main.get_redis", return_value=fake_redis), \
          patch("main.get_vectorstore", return_value=mock_vs), \
-         patch("main.initialize_auth", return_value=True):
+         patch("main.initialize_auth", return_value=True), \
+         patch("main.migrate_legacy_department_metadata"), \
+         patch("controllers.auth_controller.auth_db.get_department_by_id", return_value={"id": "default", "name": "默认部门"}), \
+         patch("controllers.auth_controller.auth_db.list_departments", return_value=[{"id": "default", "name": "默认部门"}]), \
+         patch("controllers.ingest_controller.auth_db.get_department_by_id", return_value={"id": "default", "name": "默认部门"}):
 
         from main import app
         from dependencies.auth import get_current_user
@@ -245,12 +250,12 @@ def set_current_user(app_client):
     from main import app
     from dependencies.auth import get_current_user
 
-    def set_user(user_id="test-user", role="admin"):
+    def set_user(user_id="test-user", role="admin", department_id="default"):
         app.dependency_overrides[get_current_user] = lambda: {
             "id": user_id,
             "username": user_id,
             "role": role,
-            "department_id": None,
+            "department_id": department_id,
         }
 
     return set_user

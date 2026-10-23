@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from dependencies.auth import get_current_user, require_admin
+from db import auth_db
 from db.redis_client import redis
 from db.vector import get_vectorstore
 from schemas.ingest import (
@@ -26,12 +27,20 @@ router = APIRouter()
     dependencies=[Depends(require_admin)],
 )
 def ingest(request: IngestRequest):
+    if not auth_db.get_department_by_id(request.department_id):
+        raise HTTPException(status_code=404, detail="部门不存在")
     try:
-        result = ingest_file(request.file_name, str(request.s3_url))
-        return {"status": "success", "data": result}
+        result = ingest_file(
+            request.file_name,
+            str(request.s3_url),
+            department_id=request.department_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception:
         logger.exception("Ingest failed for %s", request.file_name)
         raise HTTPException(status_code=500, detail="文档导入失败")
+    return {"status": "success", "data": result}
 
 
 @router.post(
@@ -42,6 +51,7 @@ def ingest(request: IngestRequest):
 )
 def ingest_upload(
     file_name: str = Form(..., description="文档 ID，不含扩展名"),
+    department_id: str = Form("default", description="文档所属部门"),
     file: UploadFile = File(..., description="要导入的 PDF 文件"),
 ):
     """接收前端上传的 PDF，并复用现有增量导入流程。"""
@@ -52,13 +62,21 @@ def ingest_upload(
 
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=422, detail="上传文件必须是 PDF")
+    if not auth_db.get_department_by_id(department_id):
+        raise HTTPException(status_code=404, detail="部门不存在")
 
     try:
-        result = ingest_uploaded_file(file_name, file.file)
-        return {"status": "success", "data": result}
+        result = ingest_uploaded_file(
+            file_name,
+            file.file,
+            department_id=department_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception:
         logger.exception("Uploaded ingest failed for %s", file_name)
         raise HTTPException(status_code=500, detail="文档导入失败")
+    return {"status": "success", "data": result}
 
 
 @router.get(
@@ -67,13 +85,18 @@ def ingest_upload(
     summary="查看已导入文档",
     dependencies=[Depends(get_current_user)],
 )
-def list_docs(limit: int = 50, offset: int = 0):
-    """查看所有已导入文档及其当前状态。"""
+def list_docs(limit: int = 50, offset: int = 0, user: dict = Depends(get_current_user)):
+    """管理员查看全部文档；员工只能看到所属部门文档。"""
     # Redis 集合 ingest:doc_ids 保存所有已导入文档 ID；先读取这些 ID，再逐个查询状态。
-    doc_ids = sorted(redis.smembers("ingest:doc_ids"))
-    page = doc_ids[offset : offset + limit]
-    docs = [{"doc_id": doc_id, **redis.hgetall(f"ingest_status:{doc_id}")} for doc_id in page]
-    return {"total": len(doc_ids), "docs": docs}
+    all_doc_ids = sorted(redis.smembers("ingest:doc_ids"))
+    visible_docs = []
+    for doc_id in all_doc_ids:
+        status = redis.hgetall(f"ingest_status:{doc_id}")
+        department_id = status.get("department_id", "default")
+        if user.get("role") == "admin" or department_id == user.get("department_id", "default"):
+            visible_docs.append({"doc_id": doc_id, **status})
+    page = visible_docs[offset : offset + limit]
+    return {"total": len(visible_docs), "docs": page}
 
 
 # 注意：该动态路由必须注册在 /ingest/docs 之后。Starlette 按注册顺序匹配路由；
@@ -84,10 +107,12 @@ def list_docs(limit: int = 50, offset: int = 0):
     summary="查看文档状态",
     dependencies=[Depends(get_current_user)],
 )
-def get_doc(doc_id: str):
+def get_doc(doc_id: str, user: dict = Depends(get_current_user)):
     """查看指定文档的导入状态。"""
     status = redis.hgetall(f"ingest_status:{doc_id}")
     if not status:
+        raise HTTPException(status_code=404, detail=f"未找到文档 '{doc_id}'")
+    if user.get("role") != "admin" and status.get("department_id", "default") != user.get("department_id", "default"):
         raise HTTPException(status_code=404, detail=f"未找到文档 '{doc_id}'")
     return {"doc_id": doc_id, **status}
 
@@ -115,7 +140,11 @@ def delete_doc(doc_id: str):
     # 2. 从全局内容哈希表删除文件哈希，允许以后用新名称重新导入同一 PDF。
     file_hash = status.get("file_hash")
     if file_hash:
-        redis.hdel("ingest:content_hashes", file_hash)
+        department_id = status.get("department_id", "default")
+        redis.hdel(
+            "ingest:content_hashes",
+            file_hash if department_id == "default" else f"{department_id}:{file_hash}",
+        )
 
     # 3. 清理该文档在 Redis 中的所有记录。
     redis.delete(f"ingest_status:{doc_id}")

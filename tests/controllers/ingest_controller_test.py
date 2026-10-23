@@ -49,13 +49,25 @@ def test_upload_endpoint_accepts_pdf(app_client):
     ) as ingest:
         resp = app_client.post(
             "/api/v1/ingest/upload",
-            data={"file_name": "uploaded_doc"},
+            data={"file_name": "uploaded_doc", "department_id": "default"},
             files={"file": ("document.pdf", b"%PDF-test", "application/pdf")},
         )
 
     assert resp.status_code == 200
     assert resp.json()["data"]["doc_id"] == "uploaded_doc"
     ingest.assert_called_once()
+    assert ingest.call_args.kwargs["department_id"] == "default"
+
+
+def test_upload_rejects_unknown_department(app_client):
+    with patch("controllers.ingest_controller.auth_db.get_department_by_id", return_value=None):
+        response = app_client.post(
+            "/api/v1/ingest/upload",
+            data={"file_name": "uploaded_doc", "department_id": "missing"},
+            files={"file": ("document.pdf", b"%PDF-test", "application/pdf")},
+        )
+
+    assert response.status_code == 404
 
 
 def test_upload_endpoint_rejects_non_pdf(app_client):
@@ -134,6 +146,25 @@ def test_delete_doc_removes_redis_keys_and_chroma_chunks(app_client, fake_redis,
     assert "del_doc" not in fake_redis.smembers("ingest:doc_ids")
     assert fake_redis.hget("ingest:content_hashes", "hash_del") is None
     mock_vs._collection.delete.assert_called_once_with(ids=["chroma_id_1", "chroma_id_2"])
+
+
+def test_employee_only_sees_and_reads_own_department_documents(
+    app_client, fake_redis, set_current_user
+):
+    fake_redis.sadd("ingest:doc_ids", "sales_policy", "hr_policy")
+    fake_redis.hset("ingest_status:sales_policy", mapping={"status": "done", "department_id": "sales"})
+    fake_redis.hset("ingest_status:hr_policy", mapping={"status": "done", "department_id": "hr"})
+    set_current_user(user_id="sales-employee", role="employee", department_id="sales")
+
+    listed = app_client.get("/api/v1/ingest/docs")
+    own_doc = app_client.get("/api/v1/ingest/sales_policy")
+    other_doc = app_client.get("/api/v1/ingest/hr_policy")
+
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert [doc["doc_id"] for doc in listed.json()["docs"]] == ["sales_policy"]
+    assert own_doc.status_code == 200
+    assert other_doc.status_code == 404
 
 
 def test_delete_doc_with_no_chroma_chunks_still_succeeds(app_client, fake_redis, mock_vs):

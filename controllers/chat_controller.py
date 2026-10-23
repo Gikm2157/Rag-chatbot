@@ -16,9 +16,17 @@ def chat_controller(
     user: dict = Depends(get_current_user),
 ):
     try:
-        result = conversation(user_id=user["id"], q=request.q)
+        if user.get("role") == "employee" and not user.get("department_id"):
+            raise HTTPException(status_code=403, detail="账号尚未分配部门")
+        result = conversation(
+            user_id=user["id"],
+            q=request.q,
+            department_id=user.get("department_id"),
+        )
         logger.info("Chat response generated for user %s", user["id"])
         return {"status": "success", "data": result["answer"], "sources": result["sources"]}
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Chat failed for user %s", user["id"])
         raise HTTPException(status_code=500, detail="生成回答失败")

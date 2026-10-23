@@ -18,6 +18,7 @@ def validate_file_name(value: str) -> str:
 class IngestRequest(BaseModel):
     file_name: str
     s3_url: HttpUrl
+    department_id: str = "default"
 
     @field_validator("s3_url")
     @classmethod
@@ -37,6 +38,7 @@ class IngestRequest(BaseModel):
 
 class IngestResult(BaseModel):
     doc_id: str
+    department_id: str | None = None
     status: str
     version: str | None = None
     added: int | None = None
@@ -52,6 +54,7 @@ class IngestResponse(BaseModel):
 
 class DocStatus(BaseModel):
     doc_id: str
+    department_id: str | None = None
     status: str
     file_name: str | None = None
     file_hash: str | None = None

@@ -22,6 +22,16 @@ _ALL_DOCS_KEY = "ingest:doc_ids"
 # 保存 file_hash → doc_id 映射的 Redis 哈希键，用于全局重复检测，
 # 可以识别使用不同 file_name 上传的相同内容。
 _CONTENT_HASHES_KEY = "ingest:content_hashes"
+_DEPARTMENT_MIGRATION_KEY = "ingest:department_migration_v1"
+
+
+class DocumentDepartmentConflict(ValueError):
+    """同一文档 ID 已归属其他部门。"""
+
+
+def _content_hash_key(department_id: str, file_hash: str) -> str:
+    """默认部门沿用旧键格式，其他部门使用隔离键。"""
+    return file_hash if department_id == "default" else f"{department_id}:{file_hash}"
 
 def _file_hash(file_path: str) -> str:
     """计算整个文件的 SHA-256，用于判断文档内容是否发生变化。"""
@@ -114,10 +124,59 @@ def _save_status(doc_id: str, **fields):
     })
 
 
+def migrate_legacy_department_metadata() -> None:
+    """将升级前的员工、文档和向量记录归入默认部门；可安全重复执行。"""
+    if redis.get(_DEPARTMENT_MIGRATION_KEY):
+        return
+
+    doc_ids = redis.smembers(_ALL_DOCS_KEY)
+    departments_by_doc = {}
+    for doc_id in doc_ids:
+        status_key = f"ingest_status:{doc_id}"
+        status = redis.hgetall(status_key)
+        department_id = status.get("department_id", "default")
+        departments_by_doc[doc_id] = department_id
+        if not status.get("department_id"):
+            redis.hset(status_key, "department_id", "default")
+
+    # 旧版全局文件哈希登记迁移为按部门隔离的字段，避免其他部门的同文件互相影响。
+    old_hashes = redis.hgetall(_CONTENT_HASHES_KEY)
+    for file_hash, doc_id in old_hashes.items():
+        department_id = departments_by_doc.get(doc_id, "default")
+        redis.hset(_CONTENT_HASHES_KEY, _content_hash_key(department_id, file_hash), doc_id)
+        if department_id != "default":
+            redis.hdel(_CONTENT_HASHES_KEY, file_hash)
+
+    collection = get_vectorstore()._collection
+    offset = 0
+    batch_size = 500
+    while True:
+        batch = collection.get(limit=batch_size, offset=offset, include=["metadatas"])
+        ids = batch.get("ids", [])
+        metadatas = batch.get("metadatas") or []
+        update_ids = []
+        update_metadatas = []
+        for chunk_id, metadata in zip(ids, metadatas):
+            if not metadata.get("department_id"):
+                updated_metadata = dict(metadata)
+                doc_id = metadata.get("doc_id")
+                updated_metadata["department_id"] = departments_by_doc.get(doc_id, "default")
+                update_ids.append(chunk_id)
+                update_metadatas.append(updated_metadata)
+        if update_ids:
+            collection.update(ids=update_ids, metadatas=update_metadatas)
+        offset += len(ids)
+        if len(ids) < batch_size:
+            break
+
+    redis.set(_DEPARTMENT_MIGRATION_KEY, "done")
+
+
 def process_policy(
     file_name: str,
     s3_url: str | None = None,
     uploaded_file=None,
+    department_id: str = "default",
 ) -> dict:
     # file_name 按接口约定是不带 .pdf 的文档 ID，例如文件 Company_Policy_v2.pdf
     # 对应 ID Company_Policy_v2；同一文档的不同版本可以共用一个 ID，便于追踪内容变化。
@@ -139,7 +198,13 @@ def process_policy(
 
         # ── 第 2 步：检查文件内容是否发生变化 ────────────────────────────────
         new_file_hash = _file_hash(file_path)
-        stored_file_hash = redis.hget(f"ingest_status:{doc_id}", "file_hash")
+        stored_status = redis.hgetall(f"ingest_status:{doc_id}")
+        stored_department_id = stored_status.get("department_id", "default")
+        if stored_status and stored_department_id != department_id:
+            raise DocumentDepartmentConflict(
+                "该文档 ID 已被其他部门使用，请改用不同的文档 ID"
+            )
+        stored_file_hash = stored_status.get("file_hash")
 
         if stored_file_hash == new_file_hash:
             logger.info("Skipping %s — file unchanged", doc_id)
@@ -147,7 +212,8 @@ def process_policy(
 
         # ── 第 2.1 步：全局重复检测 ───────────────────────────────────────────
         # 检查完全相同的内容是否已经使用另一个 doc_id 导入。
-        existing_doc_id = redis.hget(_CONTENT_HASHES_KEY, new_file_hash)
+        content_hash_field = _content_hash_key(department_id, new_file_hash)
+        existing_doc_id = redis.hget(_CONTENT_HASHES_KEY, content_hash_field)
         if existing_doc_id and existing_doc_id != doc_id:
             logger.info("Skipping %s — duplicate content already ingested as %s", doc_id, existing_doc_id)
             return {
@@ -186,6 +252,7 @@ def process_policy(
                 page_content=text,
                 metadata={
                     "doc_id":      doc_id,       # 用于查找该文档的全部文本块
+                    "department_id": department_id,
                     "source_file": file_name,
                     "file_hash":   new_file_hash,
                     "chunk_hash":  ch,            # 用于比较单个文本块是否变化
@@ -234,14 +301,15 @@ def process_policy(
 
         # 文档内容已变化，从全局登记表删除旧文件哈希。
         if stored_file_hash:
-            redis.hdel(_CONTENT_HASHES_KEY, stored_file_hash)
+            redis.hdel(_CONTENT_HASHES_KEY, _content_hash_key(department_id, stored_file_hash))
         # 登记新文件哈希到 doc_id 的映射。
-        redis.hset(_CONTENT_HASHES_KEY, new_file_hash, doc_id)
+        redis.hset(_CONTENT_HASHES_KEY, content_hash_field, doc_id)
 
         _save_status(
             doc_id,
             file_hash=new_file_hash,
             file_name=file_name,
+            department_id=department_id,
             version=version,
             status="done",
             total_chunks=len(new_chunks),
@@ -262,8 +330,10 @@ def process_policy(
             "total":   len(new_chunks),
         }
 
+    except DocumentDepartmentConflict:
+        raise
     except Exception as e:
-        _save_status(doc_id, status="failed", error=str(e),
+        _save_status(doc_id, department_id=department_id, status="failed", error=str(e),
                     updated_at=datetime.now(timezone.utc).isoformat())
         logger.exception("Ingest failed for %s", doc_id)
         raise

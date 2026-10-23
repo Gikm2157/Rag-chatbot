@@ -204,6 +204,7 @@ Rag-chatbot/
 * 上传本地 PDF 并导入知识库
 * 查看和删除已导入文档
 * 发送企业制度问题并查看回答来源
+* 流式接收模型回答，保留非流式聊天接口供其他调用方使用
 * 查看后端健康状态和请求加载状态
 * 管理员可切换问答工作台和管理中心，管理部门、员工账号与文档
 * 员工只能访问问答工作台，并可查看自己的部门名称
@@ -228,7 +229,7 @@ VITE_API_BASE_URL=http://localhost:8000/api/v1
 npm run build
 ```
 
-当前前端使用登录 Cookie 区分用户会话；`X-User-ID` 已不再作为认证依据。多部门隔离已接入文档列表和 RAG 检索；流式输出仍属于后续阶段功能。
+当前前端使用登录 Cookie 区分用户会话；`X-User-ID` 已不再作为认证依据。多部门隔离已接入文档列表和 RAG 检索；问答页面使用 SSE 流式接口，原非流式接口继续保留。
 
 ### 🔐 认证与部门隔离
 
@@ -405,10 +406,13 @@ http://127.0.0.1:8000/redoc    # ReDoc：简洁的只读参考文档
 | `GET /api/v1/auth/departments`、`POST /api/v1/auth/departments` | 管理员 | 查看或创建部门 |
 | `PUT /api/v1/auth/departments/{department_id}`、`DELETE /api/v1/auth/departments/{department_id}` | 管理员 | 修改或删除部门（有员工或文档时拒绝删除） |
 | `POST /api/v1/chat` | 已登录 | 使用当前账号 ID 隔离对话记忆 |
+| `POST /api/v1/chat/stream` | 已登录 | 以 SSE 分段返回回答、来源和完成状态 |
 | `GET /api/v1/ingest/docs`、`GET /api/v1/ingest/{doc_id}` | 已登录 | 查看知识库文档 |
 | `POST /api/v1/ingest`、`POST /api/v1/ingest/upload`、`DELETE /api/v1/ingest/{doc_id}` | 管理员 | 导入或删除文档 |
 
 管理员先创建部门，再创建员工并指定部门；上传文档时也要选择所属部门。员工的文档列表、文档状态查询和 RAG 检索都会限制在其所属部门，管理员可以查看全部部门文档。升级时旧员工和旧文档会自动归入“默认部门”，旧向量会补充部门元数据。当前文档 ID 在全系统范围内唯一，不同部门的文档请使用不同 ID。
+
+`POST /api/v1/chat/stream` 使用 `text/event-stream`：`token` 事件携带增量文本，`sources` 事件返回参考文档，`done` 表示回答及记忆保存流程完成，`error` 表示生成或后续记忆处理失败；长时间检索期间会发送 SSE 注释心跳。原 `POST /api/v1/chat` 保持同步响应，供不支持流式的调用方继续使用。
 
 ## 💬 8. 聊天 API
 

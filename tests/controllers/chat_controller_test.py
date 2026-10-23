@@ -4,8 +4,10 @@ POST /api/v1/chat 及其外围应用层（健康检查、首页、限流器）�
 app_client、fake_redis、mock_vs、mock_llm 夹具均来自 conftest.py。
 """
 
+import asyncio
 import json
-from unittest.mock import MagicMock
+from threading import Event
+from unittest.mock import MagicMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.documents import Document as LCDoc
@@ -67,6 +69,136 @@ def test_chat_returns_answer_and_sources(app_client, mock_vs, mock_llm):
         fetch_k=10,
         filter={"doc_id": "policy"},
     )
+
+
+def test_stream_chat_returns_tokens_sources_and_persists_memory(
+    app_client, mock_llm, mock_vs, fake_redis
+):
+    """流式接口按 SSE 输出 token，流程完成后才保存完整回答。"""
+    doc = LCDoc(
+        page_content="Streaming source.",
+        metadata={"source_file": "guide.pdf", "doc_id": "guide"},
+    )
+    mock_vs.similarity_search_with_relevance_scores.return_value = [(doc, 0.9)]
+    mock_vs.max_marginal_relevance_search.return_value = [doc]
+    mock_llm.stream.return_value = [
+        MagicMock(content="第一段"),
+        MagicMock(content="，第二段"),
+    ]
+
+    response = app_client.post("/api/v1/chat/stream", json={"q": "测试流式回答"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert 'event: token\ndata: {"content": "第一段"}' in response.text
+    assert 'event: token\ndata: {"content": "，第二段"}' in response.text
+    assert 'event: sources\ndata: {"sources": ["guide.pdf"]}' in response.text
+    assert 'event: done\ndata: {"status": "success"}' in response.text
+    assert json.loads(fake_redis.get("test-user"))["messages"][0]["content"] == "测试流式回答"
+
+
+def test_stream_chat_reports_model_failure_without_storing_memory(
+    app_client, mock_llm, fake_redis
+):
+    mock_llm.stream.side_effect = RuntimeError("model unavailable")
+
+    response = app_client.post("/api/v1/chat/stream", json={"q": "测试异常"})
+
+    assert response.status_code == 200
+    assert 'event: error\ndata: {"message": "生成回答失败"}' in response.text
+    assert fake_redis.get("test-user") is None
+
+
+def test_stream_summary_failure_keeps_previous_memory(
+    app_client, mock_llm, fake_redis
+):
+    original = {
+        "summary": "旧摘要",
+        "messages": _serialized_turns(5),
+        "pending_messages": _serialized_turns(9),
+    }
+    fake_redis.set("test-user", json.dumps(original))
+    mock_llm.stream.return_value = [MagicMock(content="本轮回答")]
+    mock_llm.invoke.side_effect = RuntimeError("summary unavailable")
+
+    response = app_client.post("/api/v1/chat/stream", json={"q": "本轮问题"})
+
+    assert response.status_code == 200
+    assert 'event: token\ndata: {"content": "本轮回答"}' in response.text
+    assert 'event: error\ndata: {"message": "生成回答失败"}' in response.text
+    assert json.loads(fake_redis.get("test-user")) == original
+
+
+def test_stream_chat_requires_department_for_employee(app_client, set_current_user):
+    set_current_user(user_id="unassigned", role="employee", department_id=None)
+
+    response = app_client.post("/api/v1/chat/stream", json={"q": "测试权限"})
+
+    assert response.status_code == 403
+
+
+def test_stream_yields_token_before_graph_finishes():
+    """客户端应先收到模型 token，而不是等整条图执行完成后才收到内容。"""
+    graph_can_finish = Event()
+
+    def invoke(state):
+        state["stream_writer"]("先到达的 token")
+        assert graph_can_finish.wait(timeout=2)
+        return {"sources": ["guide.pdf"]}
+
+    async def receive_events():
+        from services.chat_service import stream_conversation
+
+        stream = stream_conversation("user-1", "question", "sales")
+        first_event = await anext(stream)
+        assert 'event: token\ndata: {"content": "先到达的 token"}\n\n' == first_event
+        assert not graph_can_finish.is_set()
+        graph_can_finish.set()
+        return [event async for event in stream]
+
+    with patch("services.chat_service.graph.invoke", side_effect=invoke):
+        remaining_events = asyncio.run(receive_events())
+
+    assert 'event: sources\ndata: {"sources": ["guide.pdf"]}\n\n' in remaining_events
+    assert 'event: done\ndata: {"status": "success"}\n\n' in remaining_events
+
+
+def test_closing_stream_does_not_persist_partial_answer(fake_redis, mock_vs):
+    """客户端中途断开后，回答节点收到取消信号，Redis 不保存半截回答。"""
+    allow_next_chunk = Event()
+    stream_finished = Event()
+
+    def chunks():
+        try:
+            yield AIMessage(content="不完整回答")
+            allow_next_chunk.wait(timeout=5)
+            yield AIMessage(content="剩余部分")
+        finally:
+            stream_finished.set()
+
+    llm = MagicMock()
+    llm.stream.return_value = chunks()
+
+    async def disconnect_after_first_token():
+        from services.chat_service import stream_conversation
+
+        stream = stream_conversation("disconnect-user", "问题", "default")
+        first_event = await anext(stream)
+        assert 'event: token\ndata: {"content": "不完整回答"}' in first_event
+        await stream.aclose()
+
+    with patch("graph.nodes.load_memory.redis", fake_redis), patch(
+        "graph.nodes.store_memory.redis", fake_redis
+    ), patch("graph.nodes.retrieve_context.get_vectorstore", return_value=mock_vs), patch(
+        "graph.nodes.generate_answer._get_chat", return_value=llm
+    ):
+        asyncio.run(disconnect_after_first_token())
+        allow_next_chunk.set()
+        assert stream_finished.wait(timeout=5)
+
+    assert fake_redis.get("disconnect-user") is None
+
+
 
 
 def test_employee_retrieval_is_filtered_to_their_department(

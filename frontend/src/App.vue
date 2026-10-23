@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   API_BASE_URL,
   ApiError,
-  chat,
   checkHealth,
   createDepartment,
   createEmployee,
@@ -16,6 +15,7 @@ import {
   listDocuments,
   listDepartments,
   listEmployees,
+  streamChat,
   uploadDocument,
   updateDepartment,
   updateEmployee,
@@ -61,6 +61,8 @@ const editingEmployeePassword = ref('')
 const uploadDepartmentId = ref('default')
 const employeeDepartmentId = ref('default')
 const isSending = ref(false)
+const streamingAnswer = ref('')
+const streamingSources = ref<string[]>([])
 const isUploading = ref(false)
 const documents = ref<KnowledgeDocument[]>([])
 const selectedFile = ref<File | null>(null)
@@ -73,6 +75,7 @@ let healthTimer: number | undefined
 const canSend = computed(() => Boolean(currentUser.value && question.value.trim() && !isSending.value))
 const canUpload = computed(() => Boolean(isAdmin.value && selectedFile.value && documentId.value.trim() && !isUploading.value))
 const isAdmin = computed(() => currentUser.value?.role === 'admin')
+const isChatView = computed(() => Boolean(currentUser.value && (!isAdmin.value || adminView.value === 'chat')))
 
 function setNotice(type: 'success' | 'error', text: string) {
   notice.value = { type, text }
@@ -146,13 +149,21 @@ async function sendQuestion() {
   messages.value.push({ role: 'user', content })
   question.value = ''
   isSending.value = true
+  streamingAnswer.value = ''
+  streamingSources.value = []
 
   try {
-    const response = await chat(content)
+    await streamChat(content, {
+      onToken: (token) => {
+        const candidate = streamingAnswer.value + token
+        streamingAnswer.value = candidate.trim() ? candidate.trimStart() : ''
+      },
+      onSources: (sources) => { streamingSources.value = sources },
+    })
     messages.value.push({
       role: 'assistant',
-      content: response.data,
-      sources: response.sources,
+      content: streamingAnswer.value.trim(),
+      sources: streamingSources.value,
     })
   } catch (error) {
     if (handleUnauthorized(error)) {
@@ -165,6 +176,8 @@ async function sendQuestion() {
     })
   } finally {
     isSending.value = false
+    streamingAnswer.value = ''
+    streamingSources.value = []
   }
 }
 
@@ -435,7 +448,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'chat-active': isChatView }">
     <header class="topbar">
       <div class="brand-block">
         <div class="brand-mark">知</div>
@@ -522,7 +535,8 @@ onBeforeUnmount(() => {
             <div class="avatar">知</div>
             <div class="message-content">
               <span class="message-label">知识库助手</span>
-              <div class="message-bubble loading-bubble"><span></span><span></span><span></span> 正在检索并生成回答</div>
+              <div v-if="streamingAnswer" class="message-bubble">{{ streamingAnswer }}</div>
+              <div v-else class="message-bubble loading-bubble"><span></span><span></span><span></span> 正在检索并生成回答</div>
             </div>
           </div>
         </div>

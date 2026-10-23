@@ -33,6 +33,11 @@ export interface ChatResponse {
   sources: string[]
 }
 
+export interface ChatStreamHandlers {
+  onToken: (content: string) => void
+  onSources: (sources: string[]) => void
+}
+
 export interface AuthUser {
   id: string
   username: string
@@ -175,6 +180,76 @@ export function chat(question: string): Promise<ChatResponse> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ q: question }),
   })
+}
+
+export async function streamChat(question: string, handlers: ChatStreamHandlers): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ q: question }),
+      credentials: 'include',
+    })
+  } catch {
+    throw new Error('无法连接后端服务，请确认 FastAPI 已启动。')
+  }
+
+  if (!response.ok) {
+    const text = await response.text()
+    let body: unknown = null
+    try {
+      body = text ? JSON.parse(text) : null
+    } catch {
+      body = text
+    }
+    const record = body as { detail?: string; error?: string } | null
+    throw new ApiError(record?.detail || record?.error || `请求失败（HTTP ${response.status}）`, response.status)
+  }
+  if (!response.body) throw new Error('浏览器不支持流式响应。')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completed = false
+
+  const handleEvent = (rawEvent: string) => {
+    let event = 'message'
+    const dataLines: string[] = []
+    for (const line of rawEvent.split(/\r?\n/)) {
+      if (line.startsWith('event:')) event = line.slice(6).trim()
+      if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+    }
+    if (!dataLines.length) return
+    const payload = JSON.parse(dataLines.join('\n')) as {
+      content?: string
+      sources?: string[]
+      message?: string
+      status?: string
+    }
+    if (event === 'token' && payload.content) handlers.onToken(payload.content)
+    if (event === 'sources') handlers.onSources(payload.sources || [])
+    if (event === 'done') completed = true
+    if (event === 'error') throw new Error(payload.message || '生成回答失败')
+  }
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+      const events = buffer.split(/\r?\n\r?\n/)
+      buffer = events.pop() || ''
+      for (const event of events) handleEvent(event)
+      if (done) break
+    }
+    if (buffer.trim()) handleEvent(buffer)
+    if (!completed) throw new Error('流式连接提前结束，请重试。')
+  } catch (error) {
+    await reader.cancel().catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 export function listDocuments(): Promise<DocumentListResponse> {

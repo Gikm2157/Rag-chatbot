@@ -9,12 +9,15 @@ def test_chat_requires_login(app_client):
     override = app.dependency_overrides.pop(get_current_user)
     try:
         response = app_client.post("/api/v1/chat", json={"q": "测试问题"})
+        stream_response = app_client.post("/api/v1/chat/stream", json={"q": "测试问题"})
         docs_response = app_client.get("/api/v1/ingest/docs")
     finally:
         app.dependency_overrides[get_current_user] = override
 
     assert response.status_code == 401
     assert response.json()["detail"] == "请先登录"
+    assert stream_response.status_code == 401
+    assert stream_response.json()["detail"] == "请先登录"
     assert docs_response.status_code == 401
 
 

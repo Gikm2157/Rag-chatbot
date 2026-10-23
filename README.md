@@ -129,13 +129,16 @@
 
 ```
 Rag-chatbot/
-├── controllers/                    # HTTP API 路由：聊天、URL 导入、本地 PDF 上传、状态查询和删除
+├── controllers/                    # HTTP API 路由：认证、聊天、文档导入和管理
+│   ├── auth_controller.py          # 登录、退出、当前用户和员工账号创建
 │   ├── chat_controller.py
 │   └── ingest_controller.py
 ├── schemas/                        # 请求/响应数据结构及输入校验
+│   ├── auth.py                     # 登录与创建员工账号的数据结构
 │   ├── chat.py
 │   └── ingest.py
 ├── services/                       # API 与业务流程之间的服务层
+│   ├── auth_service.py             # 认证、账号创建和会话管理
 │   ├── chat_service.py             # 调用 LangGraph 并返回聊天结果
 │   └── ingest_service.py           # 编排文档导入、状态和清理操作
 ├── graph/                          # LangGraph 对话工作流
@@ -146,22 +149,27 @@ Rag-chatbot/
 │   └── policies.py                 # PDF 获取/解析、切分、去重、增量更新和向量写入
 ├── db/                             # Redis 记忆与 ChromaDB 向量库访问
 │   ├── redis_client.py
-│   └── vector.py
+│   ├── vector.py
+│   └── auth_db.py                  # SQLite 用户数据访问
+├── auth/                           # 密码哈希和会话令牌工具
+├── dependencies/                   # FastAPI 登录和角色权限依赖
 ├── utils/                          # LLM 与 Embedding 模型适配器
 │   ├── llm_adapter.py
 │   └── embedding_adapter.py
 ├── prompts/                        # 回答生成和对话摘要提示词
-├── middlewares/                    # 请求限流、日志配置等中间件
+├── middlewares/                    # 请求限流、可信来源检查和日志配置
 ├── docs/                           # 使用和开发说明文档
 │   └── PDF_INGESTION_GUIDE.md      # PDF 准备、导入和常见问题
 ├── tests/                          # 自动化测试，与源码模块对应
 │   ├── conftest.py                 # 测试夹具
 │   ├── controllers/                # API 路由测试
+│   ├── auth/                       # 密码与会话安全测试
 │   ├── ingest/                     # 文档导入逻辑测试
 │   └── utils/                      # 模型适配器测试
 ├── samples/                        # 可公开使用的 PDF 示例
 ├── models/                         # 本地嵌入模型文件（需单独下载）
 ├── chroma_db/                      # 本地 ChromaDB 持久化数据
+├── data/                           # 本地 SQLite 用户库（不提交 Git）
 ├── tmp/                            # 文档处理时使用的临时文件
 ├── logs/                           # 应用运行日志
 ├── frontend/                       # Vue 3 + Vite 前端展示页
@@ -183,6 +191,7 @@ Rag-chatbot/
 - **聊天问答：**`chat_controller.py` → `chat_service.py` → `graph/builder.py` → `graph/nodes/` → Redis/ChromaDB/大模型 → 返回回答。
 - **URL 导入：**`ingest_controller.py` → `ingest_service.py` → `ingest/policies.py` 下载并处理 PDF。
 - **本地 PDF 上传：**`ingest_controller.py` 接收文件并暂存 → `ingest_service.py` → `ingest/policies.py`；后续切分、Embedding、向量存储和状态登记复用 URL 导入流程。
+- **登录与权限：**`auth_controller.py` → `auth_service.py` → SQLite 用户表 + Redis 会话；`dependencies/auth.py` 在业务路由执行前校验当前用户或管理员角色。
 
 ### 本地运行数据
 
@@ -205,11 +214,10 @@ npm install
 npm run dev
 ```
 
-浏览器访问 `http://127.0.0.1:5173`。前端默认请求
-`http://127.0.0.1:8000/api/v1`；如后端地址不同，可在 `frontend/.env.local` 中设置：
+浏览器访问 `http://localhost:5173`。前端默认使用浏览器当前访问的主机名连接 `8000` 端口的 API（例如前端用 `127.0.0.1` 打开时，API 也会使用 `127.0.0.1`），避免登录 Cookie 因主机名不一致而丢失。只有前后端部署在不同主机时，才需要在 `frontend/.env.local` 中显式设置：
 
 ```env
-VITE_API_BASE_URL=http://127.0.0.1:8000/api/v1
+VITE_API_BASE_URL=http://localhost:8000/api/v1
 ```
 
 生成生产构建文件：
@@ -218,7 +226,30 @@ VITE_API_BASE_URL=http://127.0.0.1:8000/api/v1
 npm run build
 ```
 
-当前前端使用 `X-User-ID` 区分浏览器会话，它不是登录认证。用户登录、管理员权限、多部门知识库和流式输出属于后续阶段功能。
+当前前端使用登录 Cookie 区分用户会话；`X-User-ID` 已不再作为认证依据。多部门知识库和流式输出属于后续阶段功能。
+
+### 🔐 认证基础（第二阶段进行中）
+
+当前已将认证接入聊天和文档接口：员工登录后可以问答和查看文档，管理员才可以上传、导入和删除文档。
+
+认证流程如下：
+
+1. SQLite 保存用户、密码哈希、角色和部门 ID；密码使用带随机盐的 `scrypt`，不保存明文密码。
+2. 管理员账号由 `AUTH_ADMIN_USERNAME` 和 `AUTH_ADMIN_PASSWORD` 在首次启动时创建，不提供公开注册接口。
+3. 登录成功后生成随机会话令牌，令牌只保存在 Redis，浏览器只通过 HttpOnly Cookie 携带它。
+4. `/api/v1/auth/me` 根据会话读取当前用户，`/api/v1/auth/logout` 删除会话。
+5. 管理员可以通过 `/api/v1/auth/users` 创建员工账号；系统没有公开注册接口。
+6. 浏览器写请求还会检查 `Origin`，只允许 `.env` 中 `CORS_ORIGINS` 列出的前端地址。
+
+在本地 `.env` 中配置初始管理员后重启后端：
+
+```env
+AUTH_ADMIN_USERNAME=admin
+AUTH_ADMIN_PASSWORD=请替换为至少 8 位的强密码
+CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]
+```
+
+已有同名用户不会被覆盖，修改环境变量不会自动修改旧密码。前端登录成功后会根据角色显示管理功能，员工不会看到上传和删除入口；后端仍会再次校验权限，不能只依赖前端隐藏按钮。局域网部署时，前端默认 API 地址会匹配浏览器访问的工作室电脑 IP，但仍需把该前端地址加入后端 `CORS_ORIGINS`；只有前后端位于不同主机时才需要设置 `VITE_API_BASE_URL`。HTTPS 部署时还应设置 `AUTH_COOKIE_SECURE=true`。
 
 ## ⚙️ 安装与配置
 
@@ -359,6 +390,18 @@ http://127.0.0.1:8000/redoc    # ReDoc：简洁的只读参考文档
 
 所有路由均使用 `/api/v1` 版本前缀。
 
+### 登录和权限接口
+
+| 接口 | 权限 | 用途 |
+|------|------|------|
+| `POST /api/v1/auth/login` | 公开 | 登录并设置 HttpOnly 会话 Cookie |
+| `GET /api/v1/auth/me` | 已登录 | 返回当前用户与角色 |
+| `POST /api/v1/auth/logout` | 已登录或匿名 | 使当前会话失效 |
+| `POST /api/v1/auth/users` | 管理员 | 创建员工账号，不开放公开注册 |
+| `POST /api/v1/chat` | 已登录 | 使用当前账号 ID 隔离对话记忆 |
+| `GET /api/v1/ingest/docs`、`GET /api/v1/ingest/{doc_id}` | 已登录 | 查看知识库文档 |
+| `POST /api/v1/ingest`、`POST /api/v1/ingest/upload`、`DELETE /api/v1/ingest/{doc_id}` | 管理员 | 导入或删除文档 |
+
 ## 💬 8. 聊天 API
 
 ### 端点
@@ -380,11 +423,11 @@ POST /api/v1/chat
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/v1/chat" \
   -H "Content-Type: application/json" \
-  -H "X-User-ID: user_123" \
+  -H "Cookie: rag_session=登录接口返回的会话 Cookie" \
   -d '{"q":"退货政策是什么？"}'
 ```
 
-> `X-User-ID` 用于标识用户会话，系统会按用户分别存储和加载记忆。如省略该请求头，默认值为 `anonymous`。
+> 浏览器前端会自动携带登录接口设置的 HttpOnly Cookie；直接使用 curl 测试时需要先登录并保存 Cookie。
 
 ## 🏥 9. 健康检查
 

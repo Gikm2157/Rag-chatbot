@@ -32,13 +32,39 @@ export interface ChatResponse {
   sources: string[]
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '')
+export interface AuthUser {
+  id: string
+  username: string
+  role: 'admin' | 'employee'
+  department_id?: string | null
+}
+
+interface AuthResponse {
+  status: string
+  user: AuthUser
+}
+
+export class ApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+// 默认使用浏览器当前访问的主机名，避免前端用局域网 IP、API 却用 localhost
+// 导致 Cookie 被浏览器视为跨站请求而不发送。部署到其他主机时仍可用环境变量覆盖。
+const browserApiBaseUrl = typeof window === 'undefined'
+  ? 'http://localhost:8000/api/v1'
+  : `${window.location.protocol}//${window.location.hostname}:8000/api/v1`
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || browserApiBaseUrl).replace(/\/$/, '')
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1$/, '')
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
-    response = await fetch(url, init)
+    response = await fetch(url, { ...init, credentials: 'include' })
   } catch {
     throw new Error('无法连接后端服务，请确认 FastAPI 已启动。')
   }
@@ -53,7 +79,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const record = body as { detail?: string; error?: string } | null
-    throw new Error(record?.detail || record?.error || `请求失败（HTTP ${response.status}）`)
+    throw new ApiError(record?.detail || record?.error || `请求失败（HTTP ${response.status}）`, response.status)
   }
 
   return body as T
@@ -63,13 +89,34 @@ export function checkHealth(): Promise<{ status: string }> {
   return request<{ status: string }>(`${API_ORIGIN}/health`)
 }
 
-export function chat(question: string, userId: string): Promise<ChatResponse> {
+export function login(username: string, password: string): Promise<AuthResponse> {
+  return request<AuthResponse>(`${API_BASE_URL}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+}
+
+export function getCurrentUser(): Promise<AuthUser> {
+  return request<AuthUser>(`${API_BASE_URL}/auth/me`)
+}
+
+export function logout(): Promise<{ status: string }> {
+  return request<{ status: string }>(`${API_BASE_URL}/auth/logout`, { method: 'POST' })
+}
+
+export function createEmployee(username: string, password: string): Promise<AuthUser> {
+  return request<AuthUser>(`${API_BASE_URL}/auth/users`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+}
+
+export function chat(question: string): Promise<ChatResponse> {
   return request<ChatResponse>(`${API_BASE_URL}/chat`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-ID': userId,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ q: question }),
   })
 }

@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     redis_password: str = ""
     redis_ttl_seconds: int = 86400  # 24 小时
 
+    # 认证
+    auth_db_path: str = "./data/auth.db"
+    auth_session_ttl_seconds: int = 86400
+    auth_session_cookie_name: str = "rag_session"
+    auth_cookie_secure: bool = False
+    auth_admin_username: str = ""
+    auth_admin_password: str = ""
+
     # 对话记忆
     # 最近消息保留 10 条（5 轮），待摘要消息达到 20 条（10 轮）时更新长期摘要。
     memory_recent_message_limit: int = 10
@@ -47,7 +55,7 @@ class Settings(BaseSettings):
     # 应用
     debug: bool = False
     log_level: str = "INFO"
-    cors_origins: list[str] = ["*"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 # lru_cache 让 Settings 对象只创建一次，后续调用直接复用缓存对象。
 @lru_cache

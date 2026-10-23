@@ -75,13 +75,12 @@ def test_chat_strips_model_answer_whitespace(app_client, fake_redis, mock_llm):
 
     response = app_client.post(
         "/api/v1/chat",
-        headers={"x-user-id": "trim-answer-user"},
         json={"q": "问题"},
     )
 
     assert response.status_code == 200
     assert response.json()["data"] == "答案内容"
-    stored = json.loads(fake_redis.get("trim-answer-user"))
+    stored = json.loads(fake_redis.get("test-user"))
     assert stored["messages"][-1] == {"role": "ai", "content": "答案内容"}
 
 
@@ -90,7 +89,7 @@ def test_chat_sends_system_message_and_preserves_recent_roles(
 ):
     """回答模型应收到 SystemMessage，并保留历史消息的真实角色。"""
     fake_redis.set(
-        "system-message-user",
+        "test-user",
         json.dumps(
             {
                 "summary": "用户正在咨询退款。",
@@ -105,7 +104,7 @@ def test_chat_sends_system_message_and_preserves_recent_roles(
 
     response = app_client.post(
         "/api/v1/chat",
-        headers={"x-user-id": "system-message-user"},
+        headers={"x-user-id": "spoofed-user"},
         json={"q": "入口在哪里？"},
     )
 
@@ -122,14 +121,14 @@ def test_chat_sends_system_message_and_preserves_recent_roles(
     assert isinstance(sent_messages[-1], HumanMessage)
     assert "入口在哪里？" in sent_messages[-1].content
 
-    stored = json.loads(fake_redis.get("system-message-user"))
+    stored = json.loads(fake_redis.get("test-user"))
     assert len(stored["pending_messages"]) == 2
 
 
 def test_chat_keeps_only_the_latest_five_turns(app_client, fake_redis, mock_llm):
     """短期记忆只保存最近 10 条消息，但待摘要消息仍独立累计。"""
     fake_redis.set(
-        "recent-window-user",
+        "test-user",
         json.dumps(
             {
                 "summary": "",
@@ -142,12 +141,12 @@ def test_chat_keeps_only_the_latest_five_turns(app_client, fake_redis, mock_llm)
 
     response = app_client.post(
         "/api/v1/chat",
-        headers={"x-user-id": "recent-window-user"},
+        headers={"x-user-id": "spoofed-user"},
         json={"q": "当前问题"},
     )
 
     assert response.status_code == 200
-    stored = json.loads(fake_redis.get("recent-window-user"))
+    stored = json.loads(fake_redis.get("test-user"))
     assert len(stored["messages"]) == 10
     assert stored["messages"][-2:] == [
         {"role": "user", "content": "当前问题"},
@@ -161,7 +160,7 @@ def test_chat_does_not_summarize_before_twenty_pending_messages(
 ):
     """18 条待摘要消息仍低于 20 条边界，不应额外调用摘要模型。"""
     fake_redis.set(
-        "below-summary-threshold-user",
+        "test-user",
         json.dumps(
             {
                 "summary": "旧摘要",
@@ -174,13 +173,13 @@ def test_chat_does_not_summarize_before_twenty_pending_messages(
 
     response = app_client.post(
         "/api/v1/chat",
-        headers={"x-user-id": "below-summary-threshold-user"},
+        headers={"x-user-id": "spoofed-user"},
         json={"q": "当前问题"},
     )
 
     assert response.status_code == 200
     assert mock_llm.invoke.call_count == 1
-    stored = json.loads(fake_redis.get("below-summary-threshold-user"))
+    stored = json.loads(fake_redis.get("test-user"))
     assert stored["summary"] == "旧摘要"
     assert len(stored["pending_messages"]) == 18
 
@@ -190,7 +189,7 @@ def test_chat_updates_rolling_summary_at_twenty_pending_messages(
 ):
     """待摘要消息达到 20 条时，合并旧摘要并在成功后清空待摘要消息。"""
     fake_redis.set(
-        "rolling-summary-user",
+        "test-user",
         json.dumps(
             {
                 "summary": "用户此前咨询退款条件。",
@@ -206,7 +205,7 @@ def test_chat_updates_rolling_summary_at_twenty_pending_messages(
 
     response = app_client.post(
         "/api/v1/chat",
-        headers={"x-user-id": "rolling-summary-user"},
+        headers={"x-user-id": "spoofed-user"},
         json={"q": "退款多久能到账？"},
     )
 
@@ -218,7 +217,7 @@ def test_chat_updates_rolling_summary_at_twenty_pending_messages(
     assert "退款多久能到账？" in summary_prompt
     assert "当前回答" in summary_prompt
 
-    stored = json.loads(fake_redis.get("rolling-summary-user"))
+    stored = json.loads(fake_redis.get("test-user"))
     assert stored["summary"] == "更新后的长期摘要"
     assert stored["pending_messages"] == []
     assert len(stored["messages"]) == 10
@@ -233,7 +232,7 @@ def test_summary_failure_keeps_previous_redis_memory(
         "messages": _serialized_turns(5),
         "pending_messages": _serialized_turns(9),
     }
-    fake_redis.set("summary-failure-user", json.dumps(original))
+    fake_redis.set("test-user", json.dumps(original))
     mock_llm.invoke.side_effect = [
         MagicMock(content="本轮回答"),
         RuntimeError("summary unavailable"),
@@ -241,12 +240,12 @@ def test_summary_failure_keeps_previous_redis_memory(
 
     response = app_client.post(
         "/api/v1/chat",
-        headers={"x-user-id": "summary-failure-user"},
+        headers={"x-user-id": "spoofed-user"},
         json={"q": "本轮问题"},
     )
 
     assert response.status_code == 500
-    assert json.loads(fake_redis.get("summary-failure-user")) == original
+    assert json.loads(fake_redis.get("test-user")) == original
 
 
 def test_chat_no_docs_still_returns_200(app_client, mock_vs, mock_llm):
@@ -286,28 +285,17 @@ def test_chat_no_vectorstore_hits_returns_empty_sources(app_client, mock_vs, moc
 
 # ── 用户身份与对话记忆 ───────────────────────────────────────────────────────
 
-def test_chat_defaults_to_anonymous_when_no_header(app_client, fake_redis, mock_llm):
-    """缺少 X-User-ID 请求头时，使用 anonymous 保存对话记忆。"""
+def test_chat_uses_authenticated_identity_instead_of_user_header(
+    app_client, fake_redis, mock_llm
+):
+    """聊天记忆使用登录用户 ID，忽略调用方伪造的 X-User-ID。"""
     mock_llm.invoke.return_value = MagicMock(content="Hello!")
 
     resp = app_client.post("/api/v1/chat", json={"q": "hi"})
 
     assert resp.status_code == 200
-    assert fake_redis.exists("anonymous")
-
-
-def test_chat_uses_x_user_id_header(app_client, fake_redis, mock_llm):
-    """使用 X-User-ID 请求头的值作为 Redis 记忆键。"""
-    mock_llm.invoke.return_value = MagicMock(content="Hi user!")
-
-    resp = app_client.post(
-        "/api/v1/chat",
-        json={"q": "hello"},
-        headers={"X-User-ID": "user_xyz"},
-    )
-
-    assert resp.status_code == 200
-    assert fake_redis.exists("user_xyz")
+    assert fake_redis.exists("test-user")
+    assert not fake_redis.exists("spoofed-user")
 
 
 def test_chat_memory_persists_between_requests(app_client, fake_redis, mock_llm):
@@ -316,31 +304,31 @@ def test_chat_memory_persists_between_requests(app_client, fake_redis, mock_llm)
     app_client.post(
         "/api/v1/chat",
         json={"q": "first question"},
-        headers={"X-User-ID": "user_mem"},
+        headers={"X-User-ID": "spoofed-user"},
     )
 
     mock_llm.invoke.return_value = MagicMock(content="Second answer.")
     resp = app_client.post(
         "/api/v1/chat",
         json={"q": "second question"},
-        headers={"X-User-ID": "user_mem"},
+        headers={"X-User-ID": "spoofed-user"},
     )
 
     assert resp.status_code == 200
-    assert fake_redis.exists("user_mem")
+    assert fake_redis.exists("test-user")
 
 
-def test_different_users_have_isolated_memory(app_client, fake_redis, mock_llm):
+def test_different_users_have_isolated_memory(
+    app_client, fake_redis, mock_llm, set_current_user
+):
     """两个不同用户 ID 应使用各自独立的 Redis 键。"""
     mock_llm.invoke.return_value = MagicMock(content="Answer A.")
-    app_client.post(
-        "/api/v1/chat", json={"q": "question A"}, headers={"X-User-ID": "alice"}
-    )
+    set_current_user(user_id="alice", role="employee")
+    app_client.post("/api/v1/chat", json={"q": "question A"})
 
     mock_llm.invoke.return_value = MagicMock(content="Answer B.")
-    app_client.post(
-        "/api/v1/chat", json={"q": "question B"}, headers={"X-User-ID": "bob"}
-    )
+    set_current_user(user_id="bob", role="employee")
+    app_client.post("/api/v1/chat", json={"q": "question B"})
 
     assert fake_redis.exists("alice")
     assert fake_redis.exists("bob")

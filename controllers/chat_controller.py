@@ -1,7 +1,8 @@
 import logging
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from dependencies.auth import get_current_user
 from schemas.chat import ChatRequest, ChatResponse
 from services.chat_service import conversation
 
@@ -12,12 +13,12 @@ router = APIRouter()
 @router.post("/chat", response_model=ChatResponse, summary="知识库问答")
 def chat_controller(
     request: ChatRequest,
-    x_user_id: str = Header(default="anonymous"),
+    user: dict = Depends(get_current_user),
 ):
     try:
-        result = conversation(user_id=x_user_id, q=request.q)
-        logger.info("Chat response generated for user %s", x_user_id)
+        result = conversation(user_id=user["id"], q=request.q)
+        logger.info("Chat response generated for user %s", user["id"])
         return {"status": "success", "data": result["answer"], "sources": result["sources"]}
     except Exception:
-        logger.exception("Chat failed for user %s", x_user_id)
+        logger.exception("Chat failed for user %s", user["id"])
         raise HTTPException(status_code=500, detail="生成回答失败")

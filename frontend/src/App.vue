@@ -2,11 +2,17 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   API_BASE_URL,
+  ApiError,
   chat,
   checkHealth,
+  createEmployee,
   deleteDocument,
+  getCurrentUser,
+  login,
+  logout,
   listDocuments,
   uploadDocument,
+  type AuthUser,
   type KnowledgeDocument,
 } from './api'
 
@@ -16,14 +22,22 @@ type Message = {
   sources?: string[]
 }
 
+const welcomeMessage = '你好，我是企业知识库客服。你可以询问员工制度、工作流程和新员工入职相关内容。'
 const messages = ref<Message[]>([
   {
     role: 'assistant',
-    content: '你好，我是企业知识库客服。你可以询问员工制度、工作流程和新员工入职相关内容。',
+    content: welcomeMessage,
   },
 ])
 const question = ref('')
-const userId = ref('')
+const currentUser = ref<AuthUser | null>(null)
+const isCheckingAuth = ref(true)
+const loginUsername = ref('')
+const loginPassword = ref('')
+const isLoggingIn = ref(false)
+const newEmployeeUsername = ref('')
+const newEmployeePassword = ref('')
+const isCreatingEmployee = ref(false)
 const isSending = ref(false)
 const isUploading = ref(false)
 const documents = ref<KnowledgeDocument[]>([])
@@ -34,15 +48,9 @@ const health = ref<'checking' | 'ok' | 'error'>('checking')
 const healthText = ref('检查中')
 let healthTimer: number | undefined
 
-const canSend = computed(() => question.value.trim().length > 0 && !isSending.value)
-const canUpload = computed(() => Boolean(selectedFile.value && documentId.value.trim() && !isUploading.value))
-
-function createUserId(): string {
-  const suffix = typeof crypto !== 'undefined' && crypto.randomUUID
-    ? crypto.randomUUID().slice(0, 8)
-    : Math.random().toString(36).slice(2, 10)
-  return `visitor-${suffix}`
-}
+const canSend = computed(() => Boolean(currentUser.value && question.value.trim() && !isSending.value))
+const canUpload = computed(() => Boolean(isAdmin.value && selectedFile.value && documentId.value.trim() && !isUploading.value))
+const isAdmin = computed(() => currentUser.value?.role === 'admin')
 
 function setNotice(type: 'success' | 'error', text: string) {
   notice.value = { type, text }
@@ -51,11 +59,25 @@ function setNotice(type: 'success' | 'error', text: string) {
   }, 4500)
 }
 
+function clearSession() {
+  currentUser.value = null
+  documents.value = []
+}
+
+function handleUnauthorized(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 401) return false
+  clearSession()
+  setNotice('error', '登录已失效，请重新登录。')
+  return true
+}
+
 async function refreshDocuments() {
+  if (!currentUser.value) return
   try {
     const result = await listDocuments()
     documents.value = result.docs
   } catch (error) {
+    if (handleUnauthorized(error)) return
     setNotice('error', error instanceof Error ? error.message : '读取文档列表失败')
   }
 }
@@ -82,13 +104,17 @@ async function sendQuestion() {
   isSending.value = true
 
   try {
-    const response = await chat(content, userId.value)
+    const response = await chat(content)
     messages.value.push({
       role: 'assistant',
       content: response.data,
       sources: response.sources,
     })
   } catch (error) {
+    if (handleUnauthorized(error)) {
+      messages.value.push({ role: 'assistant', content: '登录已失效，请重新登录后继续提问。' })
+      return
+    }
     messages.value.push({
       role: 'assistant',
       content: error instanceof Error ? `暂时无法回答：${error.message}` : '暂时无法回答，请稍后重试。',
@@ -116,6 +142,10 @@ function handleFileChange(event: Event) {
 }
 
 async function handleUpload() {
+  if (!isAdmin.value) {
+    setNotice('error', '只有管理员可以导入文档。')
+    return
+  }
   if (!selectedFile.value || !documentId.value.trim() || isUploading.value) return
   if (!selectedFile.value.name.toLowerCase().endsWith('.pdf')) {
     setNotice('error', '只能上传 PDF 文件。')
@@ -131,6 +161,7 @@ async function handleUpload() {
     documentId.value = ''
     await refreshDocuments()
   } catch (error) {
+    if (handleUnauthorized(error)) return
     setNotice('error', error instanceof Error ? error.message : '文档导入失败')
   } finally {
     isUploading.value = false
@@ -138,12 +169,17 @@ async function handleUpload() {
 }
 
 async function handleDelete(document: KnowledgeDocument) {
+  if (!isAdmin.value) {
+    setNotice('error', '只有管理员可以删除文档。')
+    return
+  }
   if (!window.confirm(`确定删除“${document.doc_id}”吗？删除后将无法检索这份文档。`)) return
   try {
     await deleteDocument(document.doc_id)
     setNotice('success', `已删除文档：${document.doc_id}`)
     await refreshDocuments()
   } catch (error) {
+    if (handleUnauthorized(error)) return
     setNotice('error', error instanceof Error ? error.message : '删除文档失败')
   }
 }
@@ -161,10 +197,70 @@ function formatDate(value?: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
 
+async function handleLogin() {
+  const username = loginUsername.value.trim()
+  if (!username || !loginPassword.value || isLoggingIn.value) return
+  isLoggingIn.value = true
+  try {
+    await login(username, loginPassword.value)
+    // 登录响应返回用户信息并不等于浏览器已经保存 Cookie，立即回读会话确认两者一致。
+    const authenticatedUser = await getCurrentUser()
+    currentUser.value = authenticatedUser
+    messages.value = [{ role: 'assistant', content: welcomeMessage }]
+    loginPassword.value = ''
+    setNotice('success', `欢迎，${authenticatedUser.username}`)
+    await refreshDocuments()
+  } catch (error) {
+    clearSession()
+    setNotice('error', error instanceof Error ? error.message : '登录失败')
+  } finally {
+    isLoggingIn.value = false
+  }
+}
+
+async function handleCreateEmployee() {
+  const username = newEmployeeUsername.value.trim()
+  if (!username || !newEmployeePassword.value || isCreatingEmployee.value) return
+  isCreatingEmployee.value = true
+  try {
+    const user = await createEmployee(username, newEmployeePassword.value)
+    newEmployeeUsername.value = ''
+    newEmployeePassword.value = ''
+    setNotice('success', `员工账号 ${user.username} 已创建`)
+  } catch (error) {
+    if (handleUnauthorized(error)) return
+    setNotice('error', error instanceof Error ? error.message : '创建员工账号失败')
+  } finally {
+    isCreatingEmployee.value = false
+  }
+}
+
+async function handleLogout() {
+  try {
+    await logout()
+  } catch (error) {
+    setNotice('error', error instanceof Error ? error.message : '退出登录失败')
+  } finally {
+    currentUser.value = null
+    documents.value = []
+    messages.value = [{ role: 'assistant', content: welcomeMessage }]
+  }
+}
+
+async function restoreSession() {
+  isCheckingAuth.value = true
+  try {
+    currentUser.value = await getCurrentUser()
+    await refreshDocuments()
+  } catch {
+    currentUser.value = null
+  } finally {
+    isCheckingAuth.value = false
+  }
+}
+
 onMounted(() => {
-  userId.value = localStorage.getItem('rag-chat-user-id') || createUserId()
-  localStorage.setItem('rag-chat-user-id', userId.value)
-  void refreshDocuments()
+  void restoreSession()
   void refreshHealth()
   healthTimer = window.setInterval(() => void refreshHealth(), 30000)
 })
@@ -186,13 +282,51 @@ onBeforeUnmount(() => {
       </div>
       <div class="topbar-meta">
         <span class="api-address">API · {{ API_BASE_URL }}</span>
+        <span v-if="currentUser" class="user-pill">
+          {{ currentUser.username }} · {{ isAdmin ? '管理员' : '员工' }}
+        </span>
+        <button v-if="currentUser" class="text-button" @click="handleLogout">退出</button>
         <span class="health-pill" :class="`health-${health}`">
           <span class="health-dot"></span>{{ healthText }}
         </span>
       </div>
     </header>
 
-    <main class="workspace">
+    <main v-if="isCheckingAuth" class="auth-state">正在检查登录状态…</main>
+
+    <main v-else-if="!currentUser" class="login-layout">
+      <form class="login-panel" @submit.prevent="handleLogin">
+        <span class="section-kicker">WORKSPACE KNOWLEDGE</span>
+        <h2>员工登录</h2>
+        <p>登录后访问工作室内部知识库</p>
+        <label class="field-label" for="login-username">用户名</label>
+        <input
+          id="login-username"
+          v-model="loginUsername"
+          class="text-input"
+          autocomplete="username"
+          maxlength="64"
+          required
+        />
+        <label class="field-label" for="login-password">密码</label>
+        <input
+          id="login-password"
+          v-model="loginPassword"
+          class="text-input"
+          type="password"
+          autocomplete="current-password"
+          minlength="8"
+          maxlength="128"
+          required
+        />
+        <button class="primary-button full-width" type="submit" :disabled="isLoggingIn">
+          <span v-if="isLoggingIn" class="button-spinner"></span>
+          {{ isLoggingIn ? '正在登录…' : '登录' }}
+        </button>
+      </form>
+    </main>
+
+    <main v-else class="workspace">
       <aside class="sidebar">
         <section class="side-section intro-card">
           <span class="section-kicker">内部助手</span>
@@ -200,7 +334,7 @@ onBeforeUnmount(() => {
           <p>上传员工手册和企业制度，新员工可以直接通过对话了解工作规则。</p>
         </section>
 
-        <section class="side-section">
+        <section v-if="isAdmin" class="side-section">
           <div class="section-heading">
             <div>
               <span class="section-kicker">知识库管理</span>
@@ -222,6 +356,40 @@ onBeforeUnmount(() => {
           </button>
         </section>
 
+        <section v-if="isAdmin" class="side-section">
+          <div class="section-heading">
+            <div>
+              <span class="section-kicker">账号管理</span>
+              <h3>创建员工账号</h3>
+            </div>
+          </div>
+          <form class="admin-form" @submit.prevent="handleCreateEmployee">
+            <label class="field-label" for="new-employee-username">用户名</label>
+            <input
+              id="new-employee-username"
+              v-model="newEmployeeUsername"
+              class="text-input"
+              autocomplete="off"
+              maxlength="64"
+              required
+            />
+            <label class="field-label" for="new-employee-password">初始密码</label>
+            <input
+              id="new-employee-password"
+              v-model="newEmployeePassword"
+              class="text-input"
+              type="password"
+              autocomplete="new-password"
+              minlength="8"
+              maxlength="128"
+              required
+            />
+            <button class="secondary-button full-width" type="submit" :disabled="isCreatingEmployee">
+              {{ isCreatingEmployee ? '正在创建…' : '创建员工账号' }}
+            </button>
+          </form>
+        </section>
+
         <section class="side-section document-section">
           <div class="section-heading">
             <div>
@@ -237,7 +405,7 @@ onBeforeUnmount(() => {
                 <strong :title="document.doc_id">{{ document.doc_id }}</strong>
                 <span>{{ document.total_chunks || 0 }} 个文本块 · {{ formatDate(document.updated_at) }}</span>
               </div>
-              <button class="delete-button" :aria-label="`删除 ${document.doc_id}`" @click="handleDelete(document)">×</button>
+              <button v-if="isAdmin" class="delete-button" :aria-label="`删除 ${document.doc_id}`" @click="handleDelete(document)">×</button>
             </article>
           </div>
           <div v-else class="empty-documents">

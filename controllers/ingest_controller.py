@@ -1,7 +1,8 @@
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
+from dependencies.auth import get_current_user, require_admin
 from db.redis_client import redis
 from db.vector import get_vectorstore
 from schemas.ingest import (
@@ -18,7 +19,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/ingest", response_model=IngestResponse, summary="导入 PDF 文档")
+@router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    summary="导入 PDF 文档",
+    dependencies=[Depends(require_admin)],
+)
 def ingest(request: IngestRequest):
     try:
         result = ingest_file(request.file_name, str(request.s3_url))
@@ -28,7 +34,12 @@ def ingest(request: IngestRequest):
         raise HTTPException(status_code=500, detail="文档导入失败")
 
 
-@router.post("/ingest/upload", response_model=IngestResponse, summary="上传并导入本地 PDF")
+@router.post(
+    "/ingest/upload",
+    response_model=IngestResponse,
+    summary="上传并导入本地 PDF",
+    dependencies=[Depends(require_admin)],
+)
 def ingest_upload(
     file_name: str = Form(..., description="文档 ID，不含扩展名"),
     file: UploadFile = File(..., description="要导入的 PDF 文件"),
@@ -50,7 +61,12 @@ def ingest_upload(
         raise HTTPException(status_code=500, detail="文档导入失败")
 
 
-@router.get("/ingest/docs", response_model=DocListResponse, summary="查看已导入文档")
+@router.get(
+    "/ingest/docs",
+    response_model=DocListResponse,
+    summary="查看已导入文档",
+    dependencies=[Depends(get_current_user)],
+)
 def list_docs(limit: int = 50, offset: int = 0):
     """查看所有已导入文档及其当前状态。"""
     # Redis 集合 ingest:doc_ids 保存所有已导入文档 ID；先读取这些 ID，再逐个查询状态。
@@ -62,7 +78,12 @@ def list_docs(limit: int = 50, offset: int = 0):
 
 # 注意：该动态路由必须注册在 /ingest/docs 之后。Starlette 按注册顺序匹配路由；
 # 如果先注册 {doc_id}，/ingest/docs 中的 docs 会被误当作 doc_id。
-@router.get("/ingest/{doc_id}", response_model=DocStatus, summary="查看文档状态")
+@router.get(
+    "/ingest/{doc_id}",
+    response_model=DocStatus,
+    summary="查看文档状态",
+    dependencies=[Depends(get_current_user)],
+)
 def get_doc(doc_id: str):
     """查看指定文档的导入状态。"""
     status = redis.hgetall(f"ingest_status:{doc_id}")
@@ -71,7 +92,12 @@ def get_doc(doc_id: str):
     return {"doc_id": doc_id, **status}
 
 
-@router.delete("/ingest/{doc_id}", response_model=DeleteResponse, summary="删除文档")
+@router.delete(
+    "/ingest/{doc_id}",
+    response_model=DeleteResponse,
+    summary="删除文档",
+    dependencies=[Depends(require_admin)],
+)
 def delete_doc(doc_id: str):
     """从知识库和 Redis 记录中删除指定文档。"""
     # 执行清理前先确认文档确实存在。

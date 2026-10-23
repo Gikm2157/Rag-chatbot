@@ -222,9 +222,35 @@ def app_client(fake_redis, mock_vs, mock_llm):
          patch("controllers.ingest_controller.redis", fake_redis), \
          patch("controllers.ingest_controller.get_vectorstore", return_value=mock_vs), \
          patch("main.get_redis", return_value=fake_redis), \
-         patch("main.get_vectorstore", return_value=mock_vs):
+         patch("main.get_vectorstore", return_value=mock_vs), \
+         patch("main.initialize_auth", return_value=True):
 
         from main import app
+        from dependencies.auth import get_current_user
         from fastapi.testclient import TestClient
+        app.dependency_overrides[get_current_user] = lambda: {
+            "id": "test-user",
+            "username": "test-admin",
+            "role": "admin",
+            "department_id": None,
+        }
         with TestClient(app) as client:
             yield client
+        app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def set_current_user(app_client):
+    """在接口测试中切换已认证用户身份和角色。"""
+    from main import app
+    from dependencies.auth import get_current_user
+
+    def set_user(user_id="test-user", role="admin"):
+        app.dependency_overrides[get_current_user] = lambda: {
+            "id": user_id,
+            "username": user_id,
+            "role": role,
+            "department_id": None,
+        }
+
+    return set_user

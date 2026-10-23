@@ -9,10 +9,13 @@ from fastapi.responses import JSONResponse
 from config import get_settings
 from controllers.chat_controller import router as chat_router
 from controllers.ingest_controller import router as ingest_router
+from controllers.auth_controller import router as auth_router
 from middlewares.logging_setup import setup_logging
 from middlewares.rate_limiter import RateLimitMiddleware
+from middlewares.trusted_origin import TrustedOriginMiddleware
 from db.redis_client import get_redis
 from db.vector import get_vectorstore
+from services.auth_service import initialize_auth
 
 settings = get_settings()
 setup_logging(settings.log_level)
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 # yield 之前的代码在启动时执行，yield 之后的代码在关闭时执行。
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    initialize_auth()
     try:
         get_redis().ping()
         logger.info("Redis connected")
@@ -46,6 +50,7 @@ app = FastAPI(
 )
 
 app.add_middleware(RateLimitMiddleware, max_requests=60, window_seconds=60)
+app.add_middleware(TrustedOriginMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -56,6 +61,7 @@ app.add_middleware(
 
 app.include_router(ingest_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
 
 # 请求参数校验失败时，返回结构化 JSON，说明出错字段和原因。
 @app.exception_handler(RequestValidationError)
